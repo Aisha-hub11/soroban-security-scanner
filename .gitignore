@@ -15,7 +15,6 @@ examples/*/target/
 
 # IDE / editor
 .idea/
-.vscode/
 *.swp
 *.swo
 *~
@@ -23,6 +22,7 @@ examples/*/target/
 # OS
 .DS_Store
 Thumbs.db
+temp_auto_push.bat
 desktop.ini
 
 # Python supporting tooling
@@ -47,3 +47,5 @@ venv/
 
 # Temporary
 /tmp/
+.gitignore
+branch_structure.json
