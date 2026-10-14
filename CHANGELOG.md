@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (bounded depth, cycle-safe, deterministic) before deciding to report. This
   removes false positives where authorization or TTL management happens in a
   same-file helper; it does not claim cross-file or whole-program analysis.
+- Wave documentation points at the `StellarFoundry` organization, which owns
+  the repository, instead of the pre-transfer `AyinkxLab` slug: the maintainer
+  setup step in [docs/WAVE.md](docs/WAVE.md) and the curated board in
+  [docs/WAVE_BOARD.md](docs/WAVE_BOARD.md) no longer name the wrong org.
 
 ### Fixed
 
