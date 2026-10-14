@@ -6,7 +6,7 @@ without ambiguity.
 
 **Last updated:** 2026-09-21
 
-**Repository:** https://github.com/AyinkxLab/soroban-security-scanner
+**Repository:** https://github.com/StellarFoundry/soroban-security-scanner
 
 **Default branch:** `main`
 
@@ -38,7 +38,8 @@ without ambiguity.
 
 ### Phase 1 — Foundation (complete)
 
-- [x] Repository created under `AyinkxLab`.
+- [x] Repository created under `AyinkxLab` (since migrated to the
+  `StellarFoundry` organization).
 - [x] Cargo workspace: `soroban-scan-core` (lib), `soroban-scan-cli` (bin).
 - [x] Core `ScanError` type and version helpers.
 - [x] CLI bootstrap exposing `soroban-scan version`.
@@ -343,8 +344,8 @@ closed with links to their children.
   are available.
 - **Traction (honest):** 1 external contributor and 1 merged external PR so far.
 - **Not yet done (human step):** install the Drips Wave GitHub App on the
-  `AyinkxLab` org and apply this repository to the Stellar Wave Program. Approval
-  is decided by the program organizers. See `docs/WAVE.md` for the checklist.
+  `StellarFoundry` org and apply this repository to the Stellar Wave Program.
+  Approval is decided by the program organizers. See `docs/WAVE.md` for the checklist.
 
 ## Next task
 

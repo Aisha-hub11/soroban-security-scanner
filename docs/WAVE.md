@@ -27,7 +27,7 @@ Wave Program organizers (for example, the Stellar Wave Program):
 
 1. Sign in at the Drips Wave app with the GitHub account that owns the org.
 2. Go to **Maintainers → Orgs and Repos** and install the **Drips Wave GitHub
-   App** on the `AyinkxLab` organization.
+   App** on the organization that owns this repository (`StellarFoundry`).
 3. Sync the public repositories and **apply this repository** to the relevant
    Wave Program (Stellar).
 4. Wait for organizer approval. If declined, appeal from the app only (first
@@ -45,7 +45,7 @@ Only add a curated, Wave-sized subset with a points budget — not all 170 issue
 
 ## Claiming an issue
 
-1. Pick an issue. Start with [`good-first-issue`](https://github.com/AyinkxLab/soroban-security-scanner/labels/good-first-issue)
+1. Pick an issue. Start with [`good-first-issue`](https://github.com/StellarFoundry/soroban-security-scanner/labels/good-first-issue)
    if you are new.
 2. **Request assignment before starting.** Apply through the Wave dashboard or
    comment on the issue. Do not open a pull request for an issue you have not
