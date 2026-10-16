@@ -157,9 +157,9 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct ScanArgs {
-    /// Directory or file to scan.
-    #[arg(default_value = ".")]
-    path: PathBuf,
+    /// Directory or file(s) to scan. Repeatable; results are merged.
+    #[arg(default_value = ".", num_args = 1..)]
+    paths: Vec<PathBuf>,
 
     /// Read a single source from stdin, using NAME as its logical path.
     ///
@@ -169,7 +169,7 @@ struct ScanArgs {
     #[arg(
         long,
         value_name = "NAME",
-        conflicts_with_all = ["path", "files_from"]
+        conflicts_with_all = ["paths", "files_from"]
     )]
     stdin_filename: Option<String>,
 
@@ -367,18 +367,26 @@ fn run(cli: Cli) -> CliResult<u8> {
 
 fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
     let stdin_mode = args.stdin_filename.is_some();
-    let scan_root = if stdin_mode {
+    let multiple = args.paths.len() > 1;
+
+    if !stdin_mode {
+        for path in &args.paths {
+            if !path.exists() {
+                return Err(CliError::Runtime(format!(
+                    "path does not exist: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    // With several roots, configuration is discovered once from the current
+    // directory so every root is scanned with identical settings.
+    let scan_root = if stdin_mode || multiple {
         PathBuf::from(".")
     } else {
-        args.path.clone()
+        args.paths[0].clone()
     };
-
-    if !stdin_mode && !args.path.exists() {
-        return Err(CliError::Runtime(format!(
-            "path does not exist: {}",
-            args.path.display()
-        )));
-    }
 
     let mut config = load_config(args.config.as_deref(), &scan_root, !args.no_config)?;
 
@@ -399,24 +407,25 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
         let source = read_stdin_bounded()?;
         engine::scan_source_str(&source, &file_name, &config, registry)
     } else if let Some(list) = &args.files_from {
-        if args.path.is_file() {
+        let path = single_path(&args.paths, "--files-from")?;
+        if path.is_file() {
             return Err(CliError::Usage(
                 "--files-from requires PATH to be a directory".to_string(),
             ));
         }
-        let files = read_file_list(list, &args.path)?;
-        let loaded = project::load_files(&args.path, &files).map_err(runtime)?;
+        let files = read_file_list(list, path)?;
+        let loaded = project::load_files(path, &files).map_err(runtime)?;
         engine::scan(&loaded, registry, &config)
-    } else if args.path.is_file() {
-        let file = args.path.clone();
-        let root = file
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-        let loaded = project::load_files(&root, &[file]).map_err(runtime)?;
-        engine::scan(&loaded, registry, &config)
+    } else if multiple {
+        let mut labels = Vec::with_capacity(args.paths.len());
+        let mut outcomes = Vec::with_capacity(args.paths.len());
+        for path in &args.paths {
+            labels.push(relative_label(path)?);
+            outcomes.push(scan_path(path, registry, &config)?);
+        }
+        engine::merge(outcomes, &labels)
     } else {
-        engine::run_scan(&args.path, &config, registry).map_err(runtime)?
+        scan_path(&args.paths[0], registry, &config)?
     };
 
     if let Some(path) = &args.write_baseline {
@@ -759,6 +768,77 @@ fn read_file_list(list: &Path, root: &Path) -> CliResult<Vec<PathBuf>> {
         return Err(CliError::Usage("file list is empty".to_string()));
     }
     Ok(files)
+}
+
+/// Returns the single allowed path, or a usage error naming the offending flag.
+fn single_path<'a>(paths: &'a [PathBuf], flag: &str) -> CliResult<&'a Path> {
+    match paths {
+        [only] => Ok(only.as_path()),
+        _ => Err(CliError::Usage(format!("{flag} requires exactly one PATH"))),
+    }
+}
+
+/// Loads and scans a single path, which may be a file or a directory.
+fn scan_path(
+    path: &Path,
+    registry: &RuleRegistry,
+    config: &ScanConfig,
+) -> CliResult<engine::ScanOutcome> {
+    if path.is_file() {
+        let file = path.to_path_buf();
+        let root = file
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let loaded = project::load_files(&root, &[file]).map_err(runtime)?;
+        Ok(engine::scan(&loaded, registry, config))
+    } else {
+        engine::run_scan(path, config, registry).map_err(runtime)
+    }
+}
+
+/// Converts a scan path into a root-relative prefix for reported locations.
+///
+/// When several roots are scanned, each must live inside the current directory
+/// so every location stays a safe relative path and remains unambiguous. The
+/// check runs on the input components as well as the resolved path so it
+/// behaves identically on every platform.
+fn relative_label(path: &Path) -> CliResult<String> {
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(outside_working_directory(path));
+    }
+
+    let cwd = std::env::current_dir()
+        .map_err(|e| CliError::Runtime(format!("cannot read the current directory: {e}")))?;
+    let absolute = std::path::absolute(path)
+        .map_err(|e| CliError::Runtime(format!("cannot resolve {}: {e}", path.display())))?;
+    let relative = absolute
+        .strip_prefix(&cwd)
+        .map_err(|_| outside_working_directory(path))?;
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(outside_working_directory(path));
+    }
+
+    let label = relative.to_string_lossy().replace('\\', "/");
+    Ok(label.trim_end_matches('/').to_string())
+}
+
+/// The usage error for a path that is not inside the working directory.
+fn outside_working_directory(path: &Path) -> CliError {
+    CliError::Usage(format!(
+        "when scanning multiple paths, every PATH must be inside the current directory: {}",
+        path.display()
+    ))
 }
 
 /// Upper bound on the number of bytes read from stdin.

@@ -6,7 +6,7 @@
 //! result deterministically.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -14,7 +14,7 @@ use crate::config::ScanConfig;
 use crate::context::AnalysisContext;
 use crate::error::ScanError;
 use crate::finding::Finding;
-use crate::model::{Diagnostic, DiagnosticCode, Project};
+use crate::model::{Diagnostic, DiagnosticCode, Project, ProjectKind, SorobanInfo};
 use crate::project::{self, LoadedProject};
 use crate::registry::RuleRegistry;
 use crate::suppression::Suppression;
@@ -255,6 +255,156 @@ pub fn run_scan(
 ) -> Result<ScanOutcome, ScanError> {
     let loaded = project::load(root, &config.discovery_options())?;
     Ok(scan(&loaded, registry, config))
+}
+
+/// Merges the outcomes of scanning several roots into one deterministic report.
+///
+/// `labels` holds one prefix per outcome (in the same order); a label of `""`
+/// or `"."` leaves that root's paths unprefixed. Prefixing keeps locations from
+/// different roots unambiguous. Findings are re-sorted and de-duplicated by
+/// fingerprint, per-root statistics are combined, and the merged project
+/// reports the strongest classification seen across the roots.
+pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
+    assert_eq!(outcomes.len(), labels.len(), "one label per outcome");
+
+    let mut findings: Vec<Finding> = Vec::new();
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut suppressions: Vec<Suppression> = Vec::new();
+    let mut suppressed: Vec<SuppressedFinding> = Vec::new();
+    let mut stats = ScanStats::default();
+    let mut projects: Vec<Project> = Vec::new();
+
+    for (mut outcome, label) in outcomes.into_iter().zip(labels.iter()) {
+        if let Some(prefix) = prefix_for(label) {
+            for finding in &mut outcome.findings {
+                prepend_location(finding, &prefix);
+            }
+            for entry in &mut outcome.suppressed {
+                prepend_location(&mut entry.finding, &prefix);
+                entry.suppression.file = prefix_path(&entry.suppression.file, &prefix);
+            }
+            for suppression in &mut outcome.suppressions {
+                let file = suppression.file.to_string_lossy().into_owned();
+                suppression.file = PathBuf::from(prefix_path(&file, &prefix));
+            }
+            for diagnostic in &mut outcome.diagnostics {
+                if let Some(path) = &diagnostic.path {
+                    let file = path.to_string_lossy().into_owned();
+                    diagnostic.path = Some(PathBuf::from(prefix_path(&file, &prefix)));
+                }
+            }
+        }
+
+        findings.append(&mut outcome.findings);
+        diagnostics.append(&mut outcome.diagnostics);
+        suppressions.append(&mut outcome.suppressions);
+        suppressed.append(&mut outcome.suppressed);
+        merge_stats(&mut stats, &outcome.stats);
+        projects.push(outcome.project);
+    }
+
+    findings.sort_by_key(|finding| finding.sort_key());
+    findings.dedup_by(|a, b| a.fingerprint == b.fingerprint);
+
+    ScanOutcome {
+        project: merge_projects(projects),
+        findings,
+        diagnostics,
+        stats,
+        suppressions,
+        suppressed,
+    }
+}
+
+/// Returns the location prefix for a root label, or `None` when it adds nothing.
+fn prefix_for(label: &str) -> Option<String> {
+    let trimmed = label.trim_matches('/');
+    if trimmed.is_empty() || trimmed == "." {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Joins a relative path with a root prefix, dropping a leading `./`.
+fn prefix_path(path: &str, prefix: &str) -> String {
+    let path = path.replace('\\', "/");
+    let path = path.strip_prefix("./").unwrap_or(&path);
+    if path.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/{path}")
+    }
+}
+
+/// Rewrites a finding's location to sit under `prefix` and refreshes its hash.
+fn prepend_location(finding: &mut Finding, prefix: &str) {
+    let file = finding.location.file.to_string_lossy().into_owned();
+    finding.location.file = PathBuf::from(prefix_path(&file, prefix));
+    finding.refresh_fingerprint();
+}
+
+/// Combines per-root statistics; rule counts are identical across roots.
+fn merge_stats(stats: &mut ScanStats, other: &ScanStats) {
+    if stats.rules_run == 0 && stats.rules_skipped == 0 {
+        stats.rules_run = other.rules_run;
+        stats.rules_skipped = other.rules_skipped;
+    }
+    stats.files_analyzed += other.files_analyzed;
+    stats.findings_raw += other.findings_raw;
+    stats.findings_rejected += other.findings_rejected;
+    stats.suppressions_detected += other.suppressions_detected;
+    stats.findings_suppressed += other.findings_suppressed;
+}
+
+/// Ranks project classifications so the strongest one can be selected.
+fn kind_rank(kind: ProjectKind) -> u8 {
+    match kind {
+        ProjectKind::GenericRust => 0,
+        ProjectKind::LikelySoroban => 1,
+        ProjectKind::ConfirmedSoroban => 2,
+    }
+}
+
+/// Merges per-root project metadata into a single summary anchored at `.`.
+fn merge_projects(projects: Vec<Project>) -> Project {
+    let mut kind = ProjectKind::GenericRust;
+    let mut manifests = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut soroban = SorobanInfo::default();
+    let mut source_files = 0usize;
+
+    for project in projects {
+        if kind_rank(project.kind) > kind_rank(kind) {
+            kind = project.kind;
+        }
+        source_files += project.source_files;
+        soroban.has_sdk_dependency |= project.soroban.has_sdk_dependency;
+        soroban.contract_macros_found |= project.soroban.contract_macros_found;
+        for version in project.soroban.sdk_versions {
+            if !soroban.sdk_versions.contains(&version) {
+                soroban.sdk_versions.push(version);
+            }
+        }
+        for evidence in project.soroban.evidence {
+            if !soroban.evidence.contains(&evidence) {
+                soroban.evidence.push(evidence);
+            }
+        }
+        manifests.extend(project.manifests);
+        diagnostics.extend(project.diagnostics);
+    }
+
+    soroban.sdk_versions.sort();
+
+    Project {
+        root: PathBuf::from("."),
+        kind,
+        manifests,
+        soroban,
+        source_files,
+        diagnostics,
+    }
 }
 
 /// Builds a synthetic single-file project from an in-memory source string.
