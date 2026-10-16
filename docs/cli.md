@@ -46,6 +46,7 @@ soroban-scan scan [PATH] [OPTIONS]
 | `--guidance` | Print labeled offline guidance for findings (see [ai.md](ai.md)). |
 | `--quiet`, `-q` | Compact output; suppresses the header. |
 | `--verbose`, `-v` | Include diagnostics. |
+| `--pager <auto\|never\|always>` | Page long terminal reports through `$PAGER` (default `auto`); never affects JSON/SARIF/Markdown. |
 
 ### Inline suppressions
 
@@ -54,6 +55,24 @@ suppress a single finding at that location. Suppressed findings are excluded
 from the `--fail-on` gate but never dropped from the report: terminal, JSON,
 SARIF and Markdown output all list them together with the directive that
 suppressed them. See [Inline Suppressions](suppressions.md).
+
+### Long output and paging
+
+Very large terminal reports can flood the console. When output goes to a
+terminal and reaches 64 KiB, `--pager auto` (the default) sends it through
+`$PAGER` (falling back to `less -R`, or `more` on Windows) so it can be scrolled
+and searched.
+
+- Paging never applies to `--format json`, `sarif`, or `markdown`; machine
+  output is always written verbatim.
+- When stdout is **not** a terminal (a pipe or a redirect such as
+  `soroban-scan scan . > report.txt`), nothing is paged — the full report is
+  streamed to the pipe.
+- `--pager never` disables paging; `--pager always` forces it for terminal
+  output.
+- If the pager cannot be launched, the report is written directly.
+- The threshold can be overridden with `SOROBAN_SCAN_PAGE_THRESHOLD` (bytes; `0`
+  disables automatic paging).
 
 ### Examples
 

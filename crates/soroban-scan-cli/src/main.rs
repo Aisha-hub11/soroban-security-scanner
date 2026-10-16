@@ -29,6 +29,9 @@ const EXIT_ERROR: u8 = 3;
 
 const DEFAULT_CONFIG_FILE: &str = "soroban-scan.toml";
 
+/// Terminal reports at least this large may be paged when stdout is a TTY.
+const DEFAULT_PAGE_THRESHOLD_BYTES: usize = 64 * 1024;
+
 const CONFIG_TEMPLATE: &str = r#"# Soroban Security Scanner configuration
 # See https://github.com/AyinkxLab/soroban-security-scanner
 
@@ -104,6 +107,17 @@ impl FailOnArg {
             FailOnArg::Critical => Some(Severity::Critical),
         }
     }
+}
+
+/// Argument value for `--pager`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum PagerArg {
+    /// Page long terminal reports when stdout is a terminal.
+    Auto,
+    /// Never page; always write output verbatim.
+    Never,
+    /// Always page terminal reports, even when redirected.
+    Always,
 }
 
 /// Deterministic security analysis for Stellar Soroban smart contracts.
@@ -218,6 +232,11 @@ struct ScanArgs {
     /// Include diagnostics in the report.
     #[arg(long, short = 'v')]
     verbose: bool,
+
+    /// Page long terminal reports through `$PAGER` (never affects JSON, SARIF,
+    /// or Markdown).
+    #[arg(long, value_enum, default_value_t = PagerArg::Auto)]
+    pager: PagerArg,
 }
 
 #[derive(Debug, Args)]
@@ -462,7 +481,7 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
                 eprintln!("report written to {}", path.display());
             }
         }
-        None => print!("{rendered}"),
+        None => print_report(&rendered, args.format, args.pager)?,
     }
 
     if args.verbose && !args.quiet {
@@ -480,6 +499,94 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
     }
 
     Ok(if failed { EXIT_FINDINGS } else { EXIT_SUCCESS })
+}
+
+/// Writes a rendered report to stdout, optionally through a pager.
+///
+/// Only terminal output is ever paged; JSON, SARIF, and Markdown are written
+/// verbatim so piping stays byte-for-byte predictable. When a pager is selected
+/// but cannot be launched, the report is written directly instead.
+fn print_report(rendered: &str, format: FormatArg, pager: PagerArg) -> CliResult<()> {
+    use std::io::IsTerminal;
+
+    let is_terminal = std::io::stdout().is_terminal();
+    if should_page(pager, format, is_terminal, rendered.len(), page_threshold())
+        && run_pager(rendered).is_ok()
+    {
+        return Ok(());
+    }
+    print!("{rendered}");
+    Ok(())
+}
+
+/// Decides whether a rendered report should be paged.
+fn should_page(
+    pager: PagerArg,
+    format: FormatArg,
+    is_terminal: bool,
+    bytes: usize,
+    threshold: usize,
+) -> bool {
+    if format != FormatArg::Terminal || threshold == 0 {
+        return false;
+    }
+    match pager {
+        PagerArg::Never => false,
+        PagerArg::Always => true,
+        PagerArg::Auto => is_terminal && bytes >= threshold,
+    }
+}
+
+/// The paging threshold, honouring the `SOROBAN_SCAN_PAGE_THRESHOLD` override.
+///
+/// A value of `0` disables automatic paging. The override lets the long-output
+/// behaviour be exercised deterministically in tests.
+fn page_threshold() -> usize {
+    std::env::var("SOROBAN_SCAN_PAGE_THRESHOLD")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_PAGE_THRESHOLD_BYTES)
+}
+
+/// Streams `content` to the pager's stdin and waits for it to exit.
+fn run_pager(content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut child = pager_command()
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(content.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("pager exited unsuccessfully"))
+    }
+}
+
+/// The pager to use: `$PAGER`, else `less -R` (unix) or `more` (windows).
+fn pager_command() -> std::process::Command {
+    if let Some(pager) = std::env::var_os("PAGER").filter(|value| !value.is_empty()) {
+        let pager = pager.to_string_lossy().into_owned();
+        let mut parts = pager.split_whitespace();
+        if let Some(program) = parts.next() {
+            let mut command = std::process::Command::new(program);
+            command.args(parts);
+            return command;
+        }
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("more")
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = std::process::Command::new("less");
+        command.arg("-R");
+        command
+    }
 }
 
 fn run_rules(args: RulesArgs, registry: &RuleRegistry) -> CliResult<u8> {
@@ -655,4 +762,62 @@ fn validate_rule_ids(config: &ScanConfig, registry: &RuleRegistry) -> CliResult<
 
 fn runtime(error: soroban_scan_core::error::ScanError) -> CliError {
     CliError::Runtime(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paging_only_affects_large_terminal_output() {
+        assert!(should_page(
+            PagerArg::Auto,
+            FormatArg::Terminal,
+            true,
+            100,
+            10
+        ));
+        assert!(!should_page(
+            PagerArg::Auto,
+            FormatArg::Terminal,
+            true,
+            5,
+            10
+        ));
+        assert!(!should_page(
+            PagerArg::Auto,
+            FormatArg::Terminal,
+            false,
+            100,
+            10
+        ));
+        assert!(!should_page(
+            PagerArg::Auto,
+            FormatArg::Terminal,
+            true,
+            100,
+            0
+        ));
+        assert!(!should_page(
+            PagerArg::Never,
+            FormatArg::Terminal,
+            true,
+            100,
+            10
+        ));
+        assert!(should_page(
+            PagerArg::Always,
+            FormatArg::Terminal,
+            false,
+            1,
+            10
+        ));
+    }
+
+    #[test]
+    fn machine_formats_are_never_paged() {
+        for format in [FormatArg::Json, FormatArg::Sarif, FormatArg::Markdown] {
+            assert!(!should_page(PagerArg::Always, format, true, 1_000_000, 1));
+        }
+    }
 }

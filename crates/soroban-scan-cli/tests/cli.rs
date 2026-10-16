@@ -35,6 +35,65 @@ fn run(args: &[&str]) -> Output {
     }
 }
 
+fn run_with_env(args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(bin());
+    command.args(args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let result = command.output().expect("failed to run soroban-scan");
+    Output {
+        stdout: String::from_utf8_lossy(&result.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&result.stderr).to_string(),
+        code: result.status.code().unwrap_or(-1),
+    }
+}
+
+#[test]
+fn scan_piped_terminal_report_is_complete() {
+    // A tiny threshold would page on a terminal, but stdout is a pipe here, so
+    // the report must be written verbatim.
+    let out = run_with_env(
+        &[
+            "scan",
+            fixture("corpus/SS-001").to_str().unwrap(),
+            "--quiet",
+        ],
+        &[("SOROBAN_SCAN_PAGE_THRESHOLD", "1")],
+    );
+    assert_eq!(out.code, 1, "stderr: {}", out.stderr);
+    assert!(out.stdout.contains("SS-001"));
+}
+
+#[test]
+fn scan_pager_never_writes_the_whole_report() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--quiet",
+        "--pager",
+        "never",
+    ]);
+    assert_eq!(out.code, 1, "stderr: {}", out.stderr);
+    assert!(out.stdout.contains("SS-001"));
+}
+
+#[test]
+fn scan_json_is_never_paged() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+        "--pager",
+        "always",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let _: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+}
+
 #[test]
 fn version_exits_zero_and_prints_name() {
     let out = run(&["version"]);
