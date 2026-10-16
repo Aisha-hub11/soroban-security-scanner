@@ -1,6 +1,6 @@
 //! Black-box CLI integration tests.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn bin() -> PathBuf {
@@ -67,6 +67,19 @@ fn run_with_stdin(args: &[&str], input: &str) -> Output {
         .write_all(input.as_bytes())
         .expect("failed to write to stdin");
     let result = child.wait_with_output().expect("failed to read output");
+    Output {
+        stdout: String::from_utf8_lossy(&result.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&result.stderr).to_string(),
+        code: result.status.code().unwrap_or(-1),
+    }
+}
+
+fn run_in(dir: &Path, args: &[&str]) -> Output {
+    let result = Command::new(bin())
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("failed to run soroban-scan");
     Output {
         stdout: String::from_utf8_lossy(&result.stdout).to_string(),
         stderr: String::from_utf8_lossy(&result.stderr).to_string(),
@@ -164,6 +177,69 @@ fn scan_stdin_rejects_an_empty_filename() {
     let out = run_with_stdin(&["scan", "--stdin-filename", "   "], "fn f() {}");
     assert_eq!(out.code, 2);
     assert!(out.stderr.contains("empty"), "stderr: {}", out.stderr);
+}
+
+#[test]
+fn scan_multiple_paths_merges_results_with_unambiguous_locations() {
+    let out = run_in(
+        &repo_root(),
+        &[
+            "scan",
+            "fixtures/corpus/SS-001",
+            "fixtures/corpus/SS-003",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    let findings = value["findings"].as_array().unwrap();
+    let files: Vec<&str> = findings
+        .iter()
+        .map(|f| f["location"]["file"].as_str().unwrap())
+        .collect();
+    assert!(files
+        .iter()
+        .any(|f| f.starts_with("fixtures/corpus/SS-001/")));
+    assert!(files
+        .iter()
+        .any(|f| f.starts_with("fixtures/corpus/SS-003/")));
+    let rules: Vec<&str> = findings
+        .iter()
+        .map(|f| f["rule_id"].as_str().unwrap())
+        .collect();
+    assert!(rules.contains(&"SS-001"));
+    assert!(rules.contains(&"SS-003"));
+}
+
+#[test]
+fn scan_multiple_paths_applies_the_failure_gate() {
+    let out = run_in(
+        &repo_root(),
+        &[
+            "scan",
+            "fixtures/corpus/SS-001",
+            "fixtures/corpus/SS-003",
+            "--quiet",
+        ],
+    );
+    assert_eq!(out.code, 1, "stderr: {}", out.stderr);
+}
+
+#[test]
+fn scan_multiple_paths_rejects_paths_outside_the_working_directory() {
+    let out = run_in(
+        &repo_root(),
+        &["scan", "fixtures/corpus/SS-001", "..", "--fail-on", "none"],
+    );
+    assert_eq!(out.code, 2);
+    assert!(
+        out.stderr.contains("inside the current directory"),
+        "stderr: {}",
+        out.stderr
+    );
 }
 
 #[test]

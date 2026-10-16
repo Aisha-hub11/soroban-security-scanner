@@ -21,10 +21,11 @@ soroban-scan <COMMAND>
 ## `scan`
 
 ```text
-soroban-scan scan [PATH] [OPTIONS]
+soroban-scan scan [PATH]... [OPTIONS]
 ```
 
-`PATH` defaults to the current directory.
+`PATH` defaults to the current directory and may be repeated to scan several
+roots in one run.
 
 | Option | Description |
 | ------ | ----------- |
@@ -56,6 +57,25 @@ suppress a single finding at that location. Suppressed findings are excluded
 from the `--fail-on` gate but never dropped from the report: terminal, JSON,
 SARIF and Markdown output all list them together with the directive that
 suppressed them. See [Inline Suppressions](suppressions.md).
+
+### Scanning multiple paths
+
+Pass more than one path to scan several roots in a single run:
+
+```bash
+soroban-scan scan contracts/alpha contracts/beta --format json
+```
+
+- Every root is scanned with the same configuration, discovered once from the
+  current directory.
+- Findings, diagnostics, and suppressions from all roots are merged, sorted,
+  and de-duplicated into one report with a single exit code.
+- Locations are prefixed with the path as given (relative to the current
+  directory), so `contracts/alpha/src/lib.rs` and `contracts/beta/src/lib.rs`
+  stay unambiguous.
+- Each path must live inside the current directory; a path that escapes it
+  (including one containing `..`) is a usage error (exit code `2`).
+- `--files-from` accepts exactly one `PATH`.
 
 ### Long output and paging
 
