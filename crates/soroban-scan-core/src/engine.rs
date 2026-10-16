@@ -14,7 +14,7 @@ use crate::config::ScanConfig;
 use crate::context::AnalysisContext;
 use crate::error::ScanError;
 use crate::finding::Finding;
-use crate::model::{Diagnostic, Project};
+use crate::model::{Diagnostic, DiagnosticCode, Project};
 use crate::project::{self, LoadedProject};
 use crate::registry::RuleRegistry;
 use crate::suppression::Suppression;
@@ -150,6 +150,7 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
         finding.location.file = ctx.relative_path(&finding.location.file);
         if !is_safe_relative(&finding.location.file) {
             diagnostics.push(Diagnostic::error(
+                DiagnosticCode::RuleUnsafeLocation,
                 format!(
                     "rule {} produced an unsafe location: {}",
                     finding.rule_id,
@@ -163,6 +164,7 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
         let rel = normalize_rel(&finding.location.file);
         if !known.contains(&rel) {
             diagnostics.push(Diagnostic::error(
+                DiagnosticCode::RuleFileOutsideSet,
                 format!(
                     "rule {} reported a file outside the analyzed set: {rel}",
                     finding.rule_id
@@ -174,6 +176,7 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
         }
         if finding.evidence.trim().is_empty() {
             diagnostics.push(Diagnostic::error(
+                DiagnosticCode::RuleMissingEvidence,
                 format!(
                     "rule {} produced a finding without evidence",
                     finding.rule_id
@@ -267,6 +270,7 @@ pub fn synthetic_loaded(src: &str, file_name: &str) -> LoadedProject {
     let mut diagnostics = Vec::new();
     if let Some(err) = &parsed.parse_error {
         diagnostics.push(Diagnostic::warning(
+            DiagnosticCode::ParseFailed,
             format!("failed to parse source: {err}"),
             Some(path.clone()),
         ));

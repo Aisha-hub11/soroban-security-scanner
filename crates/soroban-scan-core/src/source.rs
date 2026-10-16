@@ -11,7 +11,7 @@ use quote::ToTokens;
 use syn::spanned::Spanned;
 
 use crate::error::ScanError;
-use crate::model::{Diagnostic, Project, SorobanInfo};
+use crate::model::{Diagnostic, DiagnosticCode, Project, SorobanInfo};
 use crate::soroban::{self, ContractAttrStrength};
 
 /// Maximum source file size that will be read (8 MiB).
@@ -831,6 +831,7 @@ pub fn load_sources(
         match std::fs::metadata(path) {
             Ok(meta) if meta.len() > MAX_SOURCE_BYTES => {
                 diagnostics.push(Diagnostic::warning(
+                    DiagnosticCode::SourceTooLarge,
                     format!(
                         "skipping source file larger than {} bytes",
                         MAX_SOURCE_BYTES
@@ -842,6 +843,7 @@ pub fn load_sources(
             Ok(_) => {}
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(
+                    DiagnosticCode::SourceUnreadable,
                     format!("skipping unreadable source file: {err}"),
                     Some(path.clone()),
                 ));
@@ -853,6 +855,7 @@ pub fn load_sources(
             Ok(c) => c,
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(
+                    DiagnosticCode::SourceUnreadable,
                     format!("skipping unreadable source file: {err}"),
                     Some(path.clone()),
                 ));
@@ -865,6 +868,7 @@ pub fn load_sources(
         let source = parse_source(path, &crate_root, &content);
         if let Some(err) = &source.parse_error {
             diagnostics.push(Diagnostic::warning(
+                DiagnosticCode::ParseFailed,
                 format!("failed to parse source: {err}"),
                 Some(path.clone()),
             ));

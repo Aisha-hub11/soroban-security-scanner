@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::discovery::{self, DiscoveryOptions};
 use crate::error::ScanError;
 use crate::manifest;
-use crate::model::{Diagnostic, Project};
+use crate::model::{Diagnostic, DiagnosticCode, Project};
 use crate::soroban;
 use crate::source::{self, ParsedSource};
 
@@ -36,6 +36,7 @@ pub fn load(root: &Path, opts: &DiscoveryOptions) -> Result<LoadedProject, ScanE
                     return Err(err);
                 }
                 diagnostics.push(Diagnostic::warning(
+                    DiagnosticCode::ManifestUnreadable,
                     format!("skipping unreadable manifest: {err}"),
                     Some(path.clone()),
                 ));
@@ -79,6 +80,7 @@ pub fn load_files(root: &Path, files: &[PathBuf]) -> Result<LoadedProject, ScanE
         match manifest::load_manifest(&root_manifest) {
             Ok(manifest) => manifests.push(manifest),
             Err(err) => diagnostics.push(Diagnostic::warning(
+                DiagnosticCode::ManifestUnreadable,
                 format!("skipping unreadable manifest: {err}"),
                 Some(root_manifest),
             )),
@@ -204,11 +206,9 @@ mod tests {
         let loaded = load(&root, &DiscoveryOptions::default()).unwrap();
         assert_eq!(loaded.sources.len(), 1);
         assert!(loaded.sources[0].parse_error.is_some());
-        assert!(loaded
-            .project
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("failed to parse")));
+        assert!(loaded.project.diagnostics.iter().any(
+            |d| d.code == DiagnosticCode::ParseFailed && d.message.contains("failed to parse")
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

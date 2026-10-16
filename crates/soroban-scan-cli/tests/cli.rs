@@ -165,6 +165,24 @@ fn scan_json_output_is_machine_readable() {
 }
 
 #[test]
+fn scan_json_includes_diagnostic_codes_and_levels() {
+    let out = run(&[
+        "scan",
+        fixture("projects/parse-error").to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    let diagnostics = value["diagnostics"].as_array().unwrap();
+    assert!(!diagnostics.is_empty());
+    assert_eq!(diagnostics[0]["code"], "PARSE-001");
+    assert_eq!(diagnostics[0]["level"], "warning");
+}
+
+#[test]
 fn scan_sarif_output_is_valid() {
     let out = run(&[
         "scan",

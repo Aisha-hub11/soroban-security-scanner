@@ -171,9 +171,62 @@ pub enum DiagnosticLevel {
     Error,
 }
 
+/// Stable, machine-readable code identifying a diagnostic.
+///
+/// Codes are part of the public contract: once released, a code keeps its
+/// meaning, so tooling can classify or suppress diagnostics without parsing the
+/// human-readable message. See `docs/diagnostics.md` for the full list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiagnosticCode {
+    /// A source file could not be parsed.
+    #[serde(rename = "PARSE-001")]
+    ParseFailed,
+    /// A manifest could not be read or parsed.
+    #[serde(rename = "MANIFEST-001")]
+    ManifestUnreadable,
+    /// A source file was skipped because it exceeds the size limit.
+    #[serde(rename = "SOURCE-001")]
+    SourceTooLarge,
+    /// A source file could not be read.
+    #[serde(rename = "SOURCE-002")]
+    SourceUnreadable,
+    /// A rule produced a location that is not a safe relative path.
+    #[serde(rename = "RULE-001")]
+    RuleUnsafeLocation,
+    /// A rule reported a file outside the analyzed set.
+    #[serde(rename = "RULE-002")]
+    RuleFileOutsideSet,
+    /// A rule produced a finding without evidence.
+    #[serde(rename = "RULE-003")]
+    RuleMissingEvidence,
+}
+
+impl DiagnosticCode {
+    /// Stable string form used in JSON and terminal output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DiagnosticCode::ParseFailed => "PARSE-001",
+            DiagnosticCode::ManifestUnreadable => "MANIFEST-001",
+            DiagnosticCode::SourceTooLarge => "SOURCE-001",
+            DiagnosticCode::SourceUnreadable => "SOURCE-002",
+            DiagnosticCode::RuleUnsafeLocation => "RULE-001",
+            DiagnosticCode::RuleFileOutsideSet => "RULE-002",
+            DiagnosticCode::RuleMissingEvidence => "RULE-003",
+        }
+    }
+}
+
+impl std::fmt::Display for DiagnosticCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A non-fatal diagnostic produced while analyzing a project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
+    /// Stable diagnostic code.
+    pub code: DiagnosticCode,
     /// Diagnostic severity.
     pub level: DiagnosticLevel,
     /// Human-readable message.
@@ -185,9 +238,14 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    /// Creates a warning diagnostic.
-    pub fn warning(message: impl Into<String>, path: Option<PathBuf>) -> Self {
+    /// Creates a warning diagnostic carrying a stable code.
+    pub fn warning(
+        code: DiagnosticCode,
+        message: impl Into<String>,
+        path: Option<PathBuf>,
+    ) -> Self {
         Diagnostic {
+            code,
             level: DiagnosticLevel::Warning,
             message: message.into(),
             path,
@@ -195,9 +253,10 @@ impl Diagnostic {
         }
     }
 
-    /// Creates an error diagnostic.
-    pub fn error(message: impl Into<String>, path: Option<PathBuf>) -> Self {
+    /// Creates an error diagnostic carrying a stable code.
+    pub fn error(code: DiagnosticCode, message: impl Into<String>, path: Option<PathBuf>) -> Self {
         Diagnostic {
+            code,
             level: DiagnosticLevel::Error,
             message: message.into(),
             path,
@@ -241,6 +300,24 @@ mod tests {
     fn project_kind_serializes_as_snake_case() {
         let json = serde_json::to_string(&ProjectKind::ConfirmedSoroban).unwrap();
         assert_eq!(json, "\"confirmed_soroban\"");
+    }
+
+    #[test]
+    fn diagnostic_code_serializes_to_a_stable_string() {
+        let json = serde_json::to_string(&DiagnosticCode::ParseFailed).unwrap();
+        assert_eq!(json, "\"PARSE-001\"");
+        assert_eq!(DiagnosticCode::RuleMissingEvidence.as_str(), "RULE-003");
+        assert_eq!(DiagnosticCode::SourceTooLarge.to_string(), "SOURCE-001");
+    }
+
+    #[test]
+    fn diagnostic_carries_code_and_level() {
+        let diagnostic = Diagnostic::warning(DiagnosticCode::ManifestUnreadable, "boom", None);
+        assert_eq!(diagnostic.code, DiagnosticCode::ManifestUnreadable);
+        assert_eq!(diagnostic.level, DiagnosticLevel::Warning);
+
+        let error = Diagnostic::error(DiagnosticCode::SourceUnreadable, "boom", None);
+        assert_eq!(error.level, DiagnosticLevel::Error);
     }
 
     #[test]
