@@ -49,6 +49,31 @@ fn run_with_env(args: &[&str], env: &[(&str, &str)]) -> Output {
     }
 }
 
+fn run_with_stdin(args: &[&str], input: &str) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new(bin())
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn soroban-scan");
+    child
+        .stdin
+        .take()
+        .expect("stdin was piped")
+        .write_all(input.as_bytes())
+        .expect("failed to write to stdin");
+    let result = child.wait_with_output().expect("failed to read output");
+    Output {
+        stdout: String::from_utf8_lossy(&result.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&result.stderr).to_string(),
+        code: result.status.code().unwrap_or(-1),
+    }
+}
+
 #[test]
 fn scan_piped_terminal_report_is_complete() {
     // A tiny threshold would page on a terminal, but stdout is a pipe here, so
@@ -92,6 +117,53 @@ fn scan_json_is_never_paged() {
     ]);
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     let _: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+}
+
+#[test]
+fn scan_stdin_uses_the_supplied_filename_for_locations() {
+    let source = std::fs::read_to_string(fixture("corpus/SS-001/positive.rs")).unwrap();
+    let out = run_with_stdin(
+        &[
+            "scan",
+            "--stdin-filename",
+            "src/lib.rs",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+        &source,
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    let findings = value["findings"].as_array().unwrap();
+    assert!(!findings.is_empty());
+    assert_eq!(findings[0]["location"]["file"], "src/lib.rs");
+}
+
+#[test]
+fn scan_stdin_respects_the_failure_gate() {
+    let source = std::fs::read_to_string(fixture("corpus/SS-001/positive.rs")).unwrap();
+    let out = run_with_stdin(
+        &["scan", "--stdin-filename", "src/lib.rs", "--quiet"],
+        &source,
+    );
+    assert_eq!(out.code, 1, "stderr: {}", out.stderr);
+    assert!(out.stdout.contains("SS-001"));
+}
+
+#[test]
+fn scan_stdin_rejects_a_filename_escaping_the_root() {
+    let out = run_with_stdin(&["scan", "--stdin-filename", "../escape.rs"], "fn f() {}");
+    assert_eq!(out.code, 2);
+    assert!(out.stderr.contains("escape"), "stderr: {}", out.stderr);
+}
+
+#[test]
+fn scan_stdin_rejects_an_empty_filename() {
+    let out = run_with_stdin(&["scan", "--stdin-filename", "   "], "fn f() {}");
+    assert_eq!(out.code, 2);
+    assert!(out.stderr.contains("empty"), "stderr: {}", out.stderr);
 }
 
 #[test]

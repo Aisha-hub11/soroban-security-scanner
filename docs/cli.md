@@ -36,6 +36,7 @@ soroban-scan scan [PATH] [OPTIONS]
 | `--config <FILE>` | Use a specific configuration file. |
 | `--no-config` | Ignore discovered configuration and use built-in defaults (mutually exclusive with `--config`). |
 | `--files-from <FILE>` | Read a newline-separated list of files to scan (relative to `PATH`). |
+| `--stdin-filename <NAME>` | Scan a single source read from stdin, using `NAME` as its logical path. |
 | `--disable <RULE>` | Disable a rule by id (repeatable). |
 | `--rule <RULE>` | Run only the given rule(s) (repeatable). |
 | `--fail-on <none\|info\|low\|medium\|high\|critical>` | Failure threshold (default `high`). |
@@ -73,6 +74,23 @@ and searched.
 - If the pager cannot be launched, the report is written directly.
 - The threshold can be overridden with `SOROBAN_SCAN_PAGE_THRESHOLD` (bytes; `0`
   disables automatic paging).
+
+### Reading from stdin
+
+`--stdin-filename <NAME>` scans a single Rust source read from standard input,
+without requiring it to exist on disk. `NAME` is the logical path recorded in
+the report, so locations stay stable across the pipe:
+
+```bash
+cat src/lib.rs | soroban-scan scan --stdin-filename src/lib.rs --format json
+```
+
+- `NAME` must be non-empty and relative, and may not escape the scan root.
+- The scan root is the current working directory; configuration is discovered
+  there exactly as for a normal scan.
+- Reads are capped at 8 MiB. Oversized input fails with exit code `2` rather
+  than being truncated, so a runaway pipe cannot exhaust memory.
+- `PATH` and `--files-from` cannot be combined with `--stdin-filename`.
 
 ### Examples
 

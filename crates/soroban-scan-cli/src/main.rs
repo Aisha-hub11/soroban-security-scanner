@@ -161,6 +161,18 @@ struct ScanArgs {
     #[arg(default_value = ".")]
     path: PathBuf,
 
+    /// Read a single source from stdin, using NAME as its logical path.
+    ///
+    /// When set, the positional PATH is ignored, the scan root is the current
+    /// directory, and reported locations use NAME. Input is capped so a large
+    /// or endless pipe cannot exhaust memory.
+    #[arg(
+        long,
+        value_name = "NAME",
+        conflicts_with_all = ["path", "files_from"]
+    )]
+    stdin_filename: Option<String>,
+
     /// Output format.
     #[arg(long, value_enum, default_value_t = FormatArg::Terminal)]
     format: FormatArg,
@@ -354,14 +366,21 @@ fn run(cli: Cli) -> CliResult<u8> {
 }
 
 fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
-    if !args.path.exists() {
+    let stdin_mode = args.stdin_filename.is_some();
+    let scan_root = if stdin_mode {
+        PathBuf::from(".")
+    } else {
+        args.path.clone()
+    };
+
+    if !stdin_mode && !args.path.exists() {
         return Err(CliError::Runtime(format!(
             "path does not exist: {}",
             args.path.display()
         )));
     }
 
-    let mut config = load_config(args.config.as_deref(), &args.path, !args.no_config)?;
+    let mut config = load_config(args.config.as_deref(), &scan_root, !args.no_config)?;
 
     if let Some(severity) = args.min_severity {
         config.min_severity = severity;
@@ -375,7 +394,11 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
 
     validate_rule_ids(&config, registry)?;
 
-    let mut outcome = if let Some(list) = &args.files_from {
+    let mut outcome = if let Some(name) = &args.stdin_filename {
+        let file_name = validate_logical_filename(name)?;
+        let source = read_stdin_bounded()?;
+        engine::scan_source_str(&source, &file_name, &config, registry)
+    } else if let Some(list) = &args.files_from {
         if args.path.is_file() {
             return Err(CliError::Usage(
                 "--files-from requires PATH to be a directory".to_string(),
@@ -736,6 +759,59 @@ fn read_file_list(list: &Path, root: &Path) -> CliResult<Vec<PathBuf>> {
         return Err(CliError::Usage("file list is empty".to_string()));
     }
     Ok(files)
+}
+
+/// Upper bound on the number of bytes read from stdin.
+///
+/// Scanning source from a pipe must not buffer unbounded input in memory, so
+/// reads are capped and oversized input is rejected with a usage error rather
+/// than being silently truncated.
+const MAX_STDIN_BYTES: usize = 8 * 1024 * 1024;
+
+/// Reads all of stdin, rejecting input larger than [`MAX_STDIN_BYTES`].
+fn read_stdin_bounded() -> CliResult<String> {
+    use std::io::Read;
+
+    let mut buffer = String::new();
+    let stdin = std::io::stdin();
+    let mut handle = stdin.lock().take((MAX_STDIN_BYTES + 1) as u64);
+    handle
+        .read_to_string(&mut buffer)
+        .map_err(|e| CliError::Runtime(format!("cannot read stdin: {e}")))?;
+    if buffer.len() > MAX_STDIN_BYTES {
+        return Err(CliError::Usage(format!(
+            "stdin exceeds the {MAX_STDIN_BYTES} byte limit"
+        )));
+    }
+    Ok(buffer)
+}
+
+/// Validates the logical filename supplied alongside `--stdin-filename`.
+///
+/// A non-empty, relative, root-respecting path keeps reported locations stable
+/// and stops the synthetic file from claiming to live outside the scan root.
+fn validate_logical_filename(name: &str) -> CliResult<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::Usage(
+            "--stdin-filename must not be empty".to_string(),
+        ));
+    }
+    let path = Path::new(trimmed);
+    if path.is_absolute() {
+        return Err(CliError::Usage(
+            "--stdin-filename must be a relative path".to_string(),
+        ));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(CliError::Usage(
+            "--stdin-filename must not escape the scan root".to_string(),
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 fn validate_rule_ids(config: &ScanConfig, registry: &RuleRegistry) -> CliResult<()> {
