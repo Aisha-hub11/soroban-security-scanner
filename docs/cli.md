@@ -45,7 +45,7 @@ soroban-scan scan [PATH] [OPTIONS]
 | `--incremental` | With `--baseline`, do not report resolved findings. |
 | `--guidance` | Print labeled offline guidance for findings (see [ai.md](ai.md)). |
 | `--quiet`, `-q` | Compact output; suppresses the header. |
-| `--verbose`, `-v` | Include diagnostics. |
+| `--verbose`, `-v` | Include diagnostics (see [diagnostics.md](diagnostics.md)). |
 | `--pager <auto\|never\|always>` | Page long terminal reports through `$PAGER` (default `auto`); never affects JSON/SARIF/Markdown. |
 
 ### Inline suppressions

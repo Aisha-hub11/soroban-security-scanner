@@ -486,7 +486,7 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
 
     if args.verbose && !args.quiet {
         for diagnostic in &outcome.diagnostics {
-            eprintln!("diagnostic: {}", diagnostic.message);
+            eprintln!("diagnostic: [{}] {}", diagnostic.code, diagnostic.message);
         }
     }
 

@@ -169,7 +169,10 @@ pub fn render_terminal(outcome: &ScanOutcome) -> String {
     if !outcome.diagnostics.is_empty() {
         out.push_str(&format!("\n{} diagnostic(s):\n", outcome.diagnostics.len()));
         for diagnostic in &outcome.diagnostics {
-            out.push_str(&format!("  - {}\n", diagnostic.message));
+            out.push_str(&format!(
+                "  - [{}] {}\n",
+                diagnostic.code, diagnostic.message
+            ));
         }
     }
 
