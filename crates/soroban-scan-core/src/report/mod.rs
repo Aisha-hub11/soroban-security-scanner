@@ -5,6 +5,7 @@
 
 use serde::Serialize;
 
+use crate::config::ScanConfig;
 use crate::engine::{ScanOutcome, SuppressedFinding, SuppressionInfo};
 use crate::finding::Finding;
 use crate::model::Diagnostic;
@@ -208,6 +209,11 @@ struct JsonReport<'a> {
     tool: ToolInfo,
     project: ProjectSummary,
     stats: StatsSummary,
+    /// Effective, serializable configuration used for the scan (#148).
+    ///
+    /// `ScanConfig` contains only scan settings: it has no environment data,
+    /// credentials, or absolute user paths.
+    effective_config: &'a ScanConfig,
     findings: &'a [Finding],
     suppressed: &'a [SuppressedFinding],
     suppressions: Vec<SuppressionJson>,
@@ -306,6 +312,7 @@ pub fn render_json(outcome: &ScanOutcome) -> Result<String, serde_json::Error> {
             suppressions_detected: outcome.stats.suppressions_detected,
             findings_suppressed: outcome.stats.findings_suppressed,
         },
+        effective_config: &outcome.config,
         findings: &outcome.findings,
         suppressed: &outcome.suppressed,
         suppressions: suppression_reports(outcome),
@@ -623,8 +630,10 @@ pub fn render_rule_detail(meta: &RuleMetadata, format: OutputFormat) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::confidence::Confidence;
     use crate::config::ScanConfig;
     use crate::engine;
+    use crate::severity::Severity;
 
     fn sample() -> (ScanOutcome, RuleRegistry) {
         let src = std::fs::read_to_string(concat!(
@@ -636,6 +645,60 @@ mod tests {
         let outcome =
             engine::scan_source_str(&src, "positive.rs", &ScanConfig::default(), &registry);
         (outcome, registry)
+    }
+
+    #[test]
+    fn json_report_includes_the_effective_configuration() {
+        let (mut outcome, _) = sample();
+        outcome.config.min_severity = Severity::Medium;
+        outcome.config.min_confidence = Confidence::High;
+        outcome.config.exclude = vec!["vendor/**".into()];
+        outcome.config.rules.disabled = vec!["SS-007".into()];
+        outcome.config.rules.enabled = vec!["SS-001".into()];
+        outcome
+            .config
+            .rules
+            .severity_overrides
+            .insert("SS-001".into(), Severity::Critical);
+        outcome
+            .config
+            .rules
+            .confidence_overrides
+            .insert("SS-001".into(), Confidence::High);
+
+        let text = render_json(&outcome).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let effective = &value["effective_config"];
+
+        assert_eq!(effective["min_severity"], "medium");
+        assert_eq!(effective["min_confidence"], "high");
+        assert_eq!(effective["exclude"][0], "vendor/**");
+        assert_eq!(effective["rules"]["disabled"][0], "SS-007");
+        assert_eq!(effective["rules"]["enabled"][0], "SS-001");
+        assert_eq!(
+            effective["rules"]["severity_overrides"]["SS-001"],
+            "critical"
+        );
+        assert_eq!(effective["rules"]["confidence_overrides"]["SS-001"], "high");
+        // No environment data or secret-bearing fields are serialized.
+        assert!(effective.get("environment").is_none());
+        assert!(effective.get("secrets").is_none());
+    }
+
+    #[test]
+    fn json_report_includes_an_empty_configuration_by_default() {
+        let (outcome, _) = sample();
+        let value: serde_json::Value =
+            serde_json::from_str(&render_json(&outcome).unwrap()).unwrap();
+        let effective = &value["effective_config"];
+
+        assert_eq!(effective["min_severity"], "info");
+        assert_eq!(effective["min_confidence"], "low");
+        assert_eq!(effective["follow_symlinks"], false);
+        assert!(effective["rules"]["disabled"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -661,7 +724,15 @@ mod tests {
         let text = render_json(&outcome).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["schema_version"], REPORT_SCHEMA_VERSION);
-        for key in ["tool", "project", "stats", "findings", "diagnostics"] {
+        for key in [
+            "schema_version",
+            "tool",
+            "project",
+            "stats",
+            "effective_config",
+            "findings",
+            "diagnostics",
+        ] {
             assert!(value.get(key).is_some(), "missing top-level key: {key}");
         }
         let finding = &value["findings"][0];

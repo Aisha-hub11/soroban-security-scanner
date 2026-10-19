@@ -76,6 +76,11 @@ enabled = false
 
 Unknown fields are rejected, as are references to unknown rule ids.
 
+JSON reports include this effective configuration (after precedence below) in
+the `effective_config` object, so a report can be reproduced from its own
+contents. The object contains no environment data, credentials, or absolute
+user paths.
+
 ## Precedence
 
 1. Built-in defaults.

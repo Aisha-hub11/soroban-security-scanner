@@ -4,7 +4,15 @@
   "title": "soroban-scan JSON report",
   "description": "Machine-readable security report emitted by `soroban-scan scan --format json`. The stable integration contract for downstream consumers such as the Stellar Contract Observatory.",
   "type": "object",
-  "required": ["schema_version", "tool", "project", "stats", "findings", "diagnostics"],
+  "required": [
+    "schema_version",
+    "tool",
+    "project",
+    "stats",
+    "effective_config",
+    "findings",
+    "diagnostics"
+  ],
   "properties": {
     "schema_version": {
       "type": "string",
@@ -59,6 +67,69 @@
           "type": "integer",
           "minimum": 0,
           "description": "Findings excluded from the gate by an inline suppression directive."
+        }
+      },
+      "additionalProperties": true
+    },
+    "effective_config": {
+      "description": "Effective, serializable scan configuration used to produce this report. Contains no environment data or secrets.",
+      "type": "object",
+      "required": [
+        "min_severity",
+        "min_confidence",
+        "exclude",
+        "follow_symlinks",
+        "rules",
+        "ai"
+      ],
+      "properties": {
+        "min_severity": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high", "critical"]
+        },
+        "min_confidence": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
+        "exclude": { "type": "array", "items": { "type": "string" } },
+        "follow_symlinks": { "type": "boolean" },
+        "rules": {
+          "type": "object",
+          "required": [
+            "disabled",
+            "enabled",
+            "severity_overrides",
+            "confidence_overrides"
+          ],
+          "properties": {
+            "disabled": { "type": "array", "items": { "type": "string" } },
+            "enabled": { "type": "array", "items": { "type": "string" } },
+            "severity_overrides": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "enum": ["info", "low", "medium", "high", "critical"]
+              }
+            },
+            "confidence_overrides": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "enum": ["low", "medium", "high"]
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "ai": {
+          "type": "object",
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "provider": { "type": ["string", "null"] },
+            "model": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
         }
       },
       "additionalProperties": true

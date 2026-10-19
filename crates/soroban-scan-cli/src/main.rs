@@ -523,14 +523,48 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
     }
 
     if args.guidance {
-        let assistant = ai::assistant(&config.ai).map_err(|e| {
+        let base = ai::assistant(&config.ai).map_err(|e| {
             CliError::Usage(format!("assistance is unavailable: {e} (see docs/ai.md)"))
         })?;
+        let provider = config
+            .ai
+            .provider
+            .clone()
+            .unwrap_or_else(|| base.name().to_string());
+        let model = config
+            .ai
+            .model
+            .clone()
+            .unwrap_or_else(|| "offline".to_string());
+        let cache =
+            ai::AssistanceCache::new(assistance_cache_root(&scan_root), ai::DEFAULT_MAX_ENTRIES);
+        let assistant = ai::CachedAssistant::new(base, cache, provider, model);
+
         let explanation = assistant.summarize(&outcome.findings);
         eprintln!("{}", explanation.render());
+        for finding in &outcome.findings {
+            let rule = registry.by_id(&finding.rule_id).map(|rule| rule.metadata());
+            let explanation = assistant.explain_finding(finding, rule);
+            eprintln!("{}", explanation.render());
+        }
     }
 
     Ok(if failed { EXIT_FINDINGS } else { EXIT_SUCCESS })
+}
+
+/// Returns the assistance cache directory for a scan root.
+///
+/// For a single-file scan the cache sits next to the file's directory; for a
+/// directory (or stdin/multi-root scan rooted at `.`) it sits under the scan
+/// root. Discovery excludes `.scanner-cache`, so cached entries are never
+/// treated as source.
+fn assistance_cache_root(scan_root: &Path) -> PathBuf {
+    let root = if scan_root.is_dir() {
+        scan_root
+    } else {
+        scan_root.parent().unwrap_or_else(|| Path::new("."))
+    };
+    root.join(ai::CACHE_DIR)
 }
 
 /// Writes a rendered report to stdout, optionally through a pager.
@@ -629,27 +663,25 @@ fn run_rules(args: RulesArgs, registry: &RuleRegistry) -> CliResult<u8> {
 
     let search = args.search.as_ref().map(|s| s.to_ascii_lowercase());
 
-    let metas: Vec<_> = registry
-        .metadata_sorted()
-        .into_iter()
-        .filter(|meta| match category {
-            Some(c) => meta.category == c,
-            None => true,
-        })
-        .filter(|meta| match args.min_severity {
-            Some(min) => meta.default_severity.meets(min),
-            None => true,
-        })
-        .filter(|meta| match &search {
-            Some(query) => {
-                meta.id.to_ascii_lowercase().contains(query)
-                    || meta.title.to_ascii_lowercase().contains(query)
-                    || meta.description.to_ascii_lowercase().contains(query)
-                    || meta.category.as_str().contains(query.as_str())
-            }
-            None => true,
-        })
-        .collect();
+    let metas: Vec<_> = match category {
+        Some(category) => registry.metadata_by_category(category),
+        None => registry.metadata_sorted(),
+    }
+    .into_iter()
+    .filter(|meta| match args.min_severity {
+        Some(min) => meta.default_severity.meets(min),
+        None => true,
+    })
+    .filter(|meta| match &search {
+        Some(query) => {
+            meta.id.to_ascii_lowercase().contains(query)
+                || meta.title.to_ascii_lowercase().contains(query)
+                || meta.description.to_ascii_lowercase().contains(query)
+                || meta.category.as_str().contains(query.as_str())
+        }
+        None => true,
+    })
+    .collect();
 
     print!("{}", report::render_rule_list(&metas, args.format.into()));
     Ok(EXIT_SUCCESS)

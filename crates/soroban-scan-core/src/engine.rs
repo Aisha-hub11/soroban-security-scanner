@@ -52,6 +52,11 @@ pub struct ScanOutcome {
     pub diagnostics: Vec<Diagnostic>,
     /// Scan statistics.
     pub stats: ScanStats,
+    /// Effective configuration used for this scan.
+    ///
+    /// Recorded so a JSON report is reproducible and auditable. It contains no
+    /// environment data or secrets.
+    pub config: ScanConfig,
     /// Inline suppression directives detected during the scan.
     ///
     /// Every detected directive is listed, including directives that matched no
@@ -242,6 +247,7 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
         findings,
         diagnostics,
         stats,
+        config: config.clone(),
         suppressions,
         suppressed,
     }
@@ -266,6 +272,13 @@ pub fn run_scan(
 /// reports the strongest classification seen across the roots.
 pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
     assert_eq!(outcomes.len(), labels.len(), "one label per outcome");
+
+    // The CLI scans every root with the same configuration, so any outcome's
+    // effective config is representative. Keep a clone before consuming them.
+    let config = outcomes
+        .first()
+        .map(|outcome| outcome.config.clone())
+        .unwrap_or_default();
 
     let mut findings: Vec<Finding> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -311,6 +324,7 @@ pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
         findings,
         diagnostics,
         stats,
+        config,
         suppressions,
         suppressed,
     }

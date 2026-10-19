@@ -23,7 +23,7 @@ finding and its rule documentation:
 soroban-scan scan ./contracts --guidance
 ```
 
-Output is prefixed with a clear label:
+Output starts with a summary and then one labeled explanation per finding:
 
 ```
 GUIDANCE (offline, rule-based)
@@ -33,6 +33,26 @@ Scanned with 5 deterministic findings: critical 0, high 2, ...
 
 This is not model-generated. It is a deterministic restatement of the rule's
 description, evidence, and remediation, plus prioritization hints.
+
+## Assistance cache
+
+Repeated assistance requests for the same finding are cached by
+**fingerprint + provider + model** (`crates/soroban-scan-core/src/ai/cache.rs`).
+A cache hit avoids calling the provider again, which saves latency and (for a
+model provider) tokens.
+
+- Entries live under the scan cache directory (`.scanner-cache/ai`, excluded
+  from discovery).
+- The cache is content-addressed: keys are SHA-256 digests and filenames contain
+  no evidence or source text.
+- Only the rendered explanation is stored. Source files, secrets, environment
+  variables, and request payloads are never cached.
+- Storage is bounded to `DEFAULT_MAX_ENTRIES` (256). When full, the
+  least-recently-used entry is evicted deterministically (oldest access first,
+  ties by key).
+- Cache I/O is best-effort: a missing, corrupt, or read-only cache directory
+  never breaks assistance or changes findings.
+
 
 ## Enabling a model-backed provider
 

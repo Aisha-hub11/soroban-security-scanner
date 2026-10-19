@@ -22,6 +22,10 @@ use crate::finding::Finding;
 use crate::rule::RuleMetadata;
 use crate::severity::Severity;
 
+mod cache;
+
+pub use cache::{cache_key, AssistanceCache, CachedAssistant, CACHE_DIR, DEFAULT_MAX_ENTRIES};
+
 /// Label prepended to all offline (non-model) guidance.
 pub const OFFLINE_LABEL: &str = "GUIDANCE (offline, rule-based)";
 

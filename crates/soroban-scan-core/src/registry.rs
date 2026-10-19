@@ -1,5 +1,8 @@
 //! Rule registry.
 
+use std::collections::BTreeMap;
+
+use crate::category::Category;
 use crate::rule::{Rule, RuleMetadata};
 
 /// Errors raised when registering rules.
@@ -65,6 +68,14 @@ impl RuleRegistry {
         self.rules.len()
     }
 
+    /// Number of registered rules.
+    ///
+    /// Explicit alias for [`RuleRegistry::len`] for callers that prefer a
+    /// named count over the collection-style method.
+    pub fn count(&self) -> usize {
+        self.len()
+    }
+
     /// Returns true if no rules are registered.
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty()
@@ -73,6 +84,19 @@ impl RuleRegistry {
     /// All registered rules, in registration order.
     pub fn rules(&self) -> &[Box<dyn Rule>] {
         &self.rules
+    }
+
+    /// Iterates over rule metadata in registration order.
+    ///
+    /// This is the stable, read-only introspection surface for tooling (docs
+    /// generation, `rules`, validation) that only needs metadata.
+    pub fn metadata(&self) -> impl Iterator<Item = &RuleMetadata> {
+        self.rules.iter().map(|rule| rule.metadata())
+    }
+
+    /// Alias for [`RuleRegistry::metadata`].
+    pub fn iter_metadata(&self) -> impl Iterator<Item = &RuleMetadata> {
+        self.metadata()
     }
 
     /// Finds a rule by id.
@@ -85,9 +109,42 @@ impl RuleRegistry {
 
     /// Metadata for all rules, sorted by id.
     pub fn metadata_sorted(&self) -> Vec<&RuleMetadata> {
-        let mut metas: Vec<&RuleMetadata> = self.rules.iter().map(|r| r.metadata()).collect();
+        let mut metas: Vec<&RuleMetadata> = self.metadata().collect();
         metas.sort_by_key(|m| m.id);
         metas
+    }
+
+    /// Metadata for every rule in `category`, sorted by id.
+    pub fn metadata_by_category(&self, category: Category) -> Vec<&RuleMetadata> {
+        self.metadata_sorted()
+            .into_iter()
+            .filter(|meta| meta.category == category)
+            .collect()
+    }
+
+    /// Rules in `category`, in registration order.
+    pub fn by_category(&self, category: Category) -> Vec<&dyn Rule> {
+        self.rules
+            .iter()
+            .filter(|rule| rule.metadata().category == category)
+            .map(|rule| rule.as_ref())
+            .collect()
+    }
+
+    /// Number of rules in `category`.
+    pub fn count_by_category(&self, category: Category) -> usize {
+        self.metadata()
+            .filter(|meta| meta.category == category)
+            .count()
+    }
+
+    /// Number of registered rules per category, in deterministic category order.
+    pub fn category_counts(&self) -> BTreeMap<Category, usize> {
+        let mut counts = BTreeMap::new();
+        for meta in self.metadata() {
+            *counts.entry(meta.category).or_insert(0) += 1;
+        }
+        counts
     }
 }
 
@@ -117,6 +174,12 @@ mod tests {
                     "n/a",
                 ),
             }
+        }
+
+        fn in_category(id: &'static str, category: Category) -> Self {
+            let mut dummy = Dummy::new(id);
+            dummy.meta.category = category;
+            dummy
         }
     }
 
@@ -161,5 +224,48 @@ mod tests {
         reg.register(Box::new(Dummy::new("SS-001"))).unwrap();
         let ids: Vec<_> = reg.metadata_sorted().iter().map(|m| m.id).collect();
         assert_eq!(ids, vec!["SS-001", "SS-002"]);
+    }
+
+    #[test]
+    fn metadata_iteration_is_read_only_and_in_registration_order() {
+        let mut reg = RuleRegistry::new();
+        reg.register(Box::new(Dummy::new("SS-003"))).unwrap();
+        reg.register(Box::new(Dummy::new("SS-001"))).unwrap();
+
+        let ids: Vec<_> = reg.metadata().map(|meta| meta.id).collect();
+        assert_eq!(ids, vec!["SS-003", "SS-001"]);
+        let alias_ids: Vec<_> = reg.iter_metadata().map(|meta| meta.id).collect();
+        assert_eq!(alias_ids, ids);
+        assert_eq!(reg.count(), 2);
+    }
+
+    #[test]
+    fn category_lookup_and_counts_are_stable() {
+        let mut reg = RuleRegistry::new();
+        reg.register(Box::new(Dummy::in_category("SS-002", Category::Storage)))
+            .unwrap();
+        reg.register(Box::new(Dummy::in_category("SS-001", Category::Storage)))
+            .unwrap();
+        reg.register(Box::new(Dummy::new("SS-003"))).unwrap();
+
+        let storage_ids: Vec<_> = reg
+            .metadata_by_category(Category::Storage)
+            .iter()
+            .map(|meta| meta.id)
+            .collect();
+        assert_eq!(storage_ids, vec!["SS-001", "SS-002"]);
+
+        let rules = reg.by_category(Category::Storage);
+        assert_eq!(rules.len(), 2);
+        assert!(rules.iter().any(|rule| rule.metadata().id == "SS-001"));
+
+        assert_eq!(reg.count_by_category(Category::Storage), 2);
+        assert_eq!(reg.count_by_category(Category::Authorization), 1);
+        assert_eq!(reg.count_by_category(Category::Unsafe), 0);
+        assert!(reg.metadata_by_category(Category::Unsafe).is_empty());
+
+        let counts = reg.category_counts();
+        assert_eq!(counts.get(&Category::Storage), Some(&2));
+        assert_eq!(counts.get(&Category::Authorization), Some(&1));
     }
 }

@@ -204,8 +204,9 @@ untrusted data and cannot enable code execution or network access.
 ## Output formats
 
 - **terminal** — human-readable, grouped listing with remediation.
-- **json** — stable structured report (tool, project, stats, findings,
-  diagnostics).
+- **json** — stable structured report (tool, project, stats, effective config,
+  findings, diagnostics). The `effective_config` object records the settings
+  used for the scan, excluding environment data and secrets.
 - **sarif** — SARIF 2.1.0 for GitHub code scanning and compatible tools.
 - **markdown** — report suitable for pull requests and documentation.
 
