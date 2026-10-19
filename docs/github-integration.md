@@ -183,13 +183,13 @@ soroban-scan scan . --files-from changed.txt \
   --format github --min-severity high --fail-on none
 ```
 
-```text
-::error file=src/lib.rs,line=42,col=9,title=SS-001: State-changing entry point without caller authorization::SS-001: State-changing entry point without caller authorization — ...
-```
+The renderer emits one annotation per finding and escapes `%`, CR, LF, `:`, and
+`,` in user-controlled values, so scanned source paths, titles, and evidence
+cannot inject additional workflow commands:
 
-The renderer escapes `%`, newlines, carriage returns, `:`, and `,` in
-user-controlled values, preventing workflow-command injection from scanned source
-paths or titles.
+```text
+::error file=src/lib.rs,line=42,title=SS-001%3A State-changing entry point without caller authorization::SS-001: State-changing entry point without caller authorization — ...
+```
 
 Workflow commands are simple but unstructured. The opt-in check run described
 below adds severity levels, remediation details, and an explicit pass/fail
