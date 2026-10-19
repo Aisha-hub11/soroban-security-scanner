@@ -65,6 +65,26 @@ heuristically is reported as `severity: high, confidence: low`, never
 Each detector has a positive and negative fixture under
 `fixtures/corpus/<RULE-ID>/`.
 
+## Registry introspection API
+
+`RuleRegistry` exposes a small, read-only API so tooling (the `rules` command,
+documentation generation, and metadata validation) does not reach into registry
+internals:
+
+| Method | Purpose |
+| ------ | ------- |
+| `metadata()` / `iter_metadata()` | Iterate every rule's metadata in registration order. |
+| `metadata_sorted()` | Metadata sorted by rule id, the stable presentation order. |
+| `metadata_by_category(category)` | Metadata for one category, sorted by id. |
+| `by_category(category)` | Rules in one category, in registration order. |
+| `by_id(id)` | Look up a single rule by id. |
+| `len()` / `count()` | Number of registered rules. |
+| `count_by_category(category)` | Number of rules in one category. |
+| `category_counts()` | Deterministic `BTreeMap<Category, usize>` of per-category counts. |
+
+The API is read-only by design; registration and mutation stay on
+`register()`.
+
 ## Anatomy of a finding
 
 - `rule_id`, `title`, `description`

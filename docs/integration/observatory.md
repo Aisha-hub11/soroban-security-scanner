@@ -53,6 +53,24 @@ soroban-scan scan <path> --format sarif --output results.sarif
 - Source paths use **forward slashes** on every OS for reproducible output.
 - Output is **deterministic**: identical input yields byte-identical findings.
 
+## Finding order
+
+`findings` is ordered by the stable key
+`(file, line, column, rule_id, fingerprint)`, comparing files and rule ids as
+strings and treating a missing column as `0`. This ordering is part of the
+contract: consumers and snapshot tests may rely on it, and every output format
+(terminal, JSON, SARIF, Markdown) preserves it. Ties at the file/line level are
+broken by column, then rule id, then fingerprint.
+
+## Effective configuration
+
+`effective_config` records the settings that produced the report (after config
+file discovery and command-line overrides), making CI results reproducible:
+minimum severity/confidence, exclude globs, symlink handling, disabled/enabled
+rules, per-rule severity/confidence overrides, and the optional AI settings.
+It is the serializable scan configuration; environment variables, credentials,
+and absolute user paths are never included.
+
 A machine-readable [JSON Schema](report.schema.json) accompanies this document.
 
 ## Top-level shape
@@ -75,6 +93,19 @@ A machine-readable [JSON Schema](report.schema.json) accompanies this document.
     "findings_rejected": 0,
     "suppressions_detected": 0,
     "findings_suppressed": 0
+  },
+  "effective_config": {
+    "min_severity": "info",
+    "min_confidence": "low",
+    "exclude": [],
+    "follow_symlinks": false,
+    "rules": {
+      "disabled": [],
+      "enabled": [],
+      "severity_overrides": {},
+      "confidence_overrides": {}
+    },
+    "ai": { "enabled": false, "provider": null, "model": null }
   },
   "findings": [ /* see below */ ],
   "suppressed": [ /* finding + the inline directive that suppressed it */ ],

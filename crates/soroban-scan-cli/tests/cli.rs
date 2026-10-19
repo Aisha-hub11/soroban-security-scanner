@@ -815,3 +815,124 @@ fn no_config_ignores_discovered_configuration() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn findings_are_rendered_in_the_documented_order() {
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-order-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"ordering-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nsoroban-sdk = \"20\"\n",
+    )
+    .unwrap();
+
+    let address_a = format!("G{}B", "A".repeat(54));
+    let address_b = format!("G{}C", "A".repeat(54));
+    let address_c = format!("G{}D", "A".repeat(54));
+    std::fs::write(
+        dir.join("src/a.rs"),
+        format!(
+            "use soroban_sdk::contractimpl;\n\n#[contractimpl]\nimpl C {{\n    pub fn addrs() -> (&'static str, &'static str) {{ (\"{address_a}\", \"{address_b}\") }}\n}}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/b.rs"),
+        format!(
+            "use soroban_sdk::contractimpl;\n\n#[contractimpl]\nimpl D {{\n    pub fn addr() -> &'static str {{ \"{address_c}\" }}\n}}\n"
+        ),
+    )
+    .unwrap();
+
+    let out = run_in(
+        &dir,
+        &[
+            "scan",
+            ".",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+            "--no-config",
+        ],
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    let ordered: Vec<(String, usize, Option<usize>, String)> = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["rule_id"] == "SS-007")
+        .map(|finding| {
+            (
+                finding["location"]["file"].as_str().unwrap().to_string(),
+                finding["location"]["line"].as_u64().unwrap() as usize,
+                finding["location"]["column"].as_u64().map(|c| c as usize),
+                finding["evidence"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+
+    assert_eq!(ordered.len(), 3, "findings: {ordered:?}");
+    assert_eq!(ordered[0].0, "src/a.rs");
+    assert_eq!(ordered[1].0, "src/a.rs");
+    assert_eq!(ordered[2].0, "src/b.rs");
+    // Same file and line: the column tie-break is ascending.
+    assert_eq!(ordered[0].1, ordered[1].1);
+    assert!(ordered[0].2.unwrap() < ordered[1].2.unwrap());
+    assert!(ordered[0].3.contains(&address_a));
+    assert!(ordered[1].3.contains(&address_b));
+    assert!(ordered[2].3.contains(&address_c));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn json_report_records_the_effective_configuration() {
+    let dir = std::env::temp_dir().join(format!(
+        "soroban-scan-cli-effective-config-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("scan.toml");
+    std::fs::write(
+        &config,
+        "[rules]\ndisabled = [\"SS-007\"]\nenabled = [\"SS-001\"]\nseverity_overrides = { SS-001 = \"critical\" }\nconfidence_overrides = { SS-001 = \"high\" }\n",
+    )
+    .unwrap();
+
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+        "--format",
+        "json",
+        "--min-severity",
+        "medium",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    let effective = &value["effective_config"];
+    assert_eq!(effective["min_severity"], "medium");
+    assert_eq!(effective["min_confidence"], "low");
+    assert_eq!(effective["rules"]["disabled"][0], "SS-007");
+    assert_eq!(effective["rules"]["enabled"][0], "SS-001");
+    assert_eq!(
+        effective["rules"]["severity_overrides"]["SS-001"],
+        "critical"
+    );
+    assert_eq!(effective["rules"]["confidence_overrides"]["SS-001"], "high");
+    assert!(effective["ai"]["enabled"] == false);
+    assert!(effective["ai"]["provider"].is_null());
+    assert!(effective.get("environment").is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
