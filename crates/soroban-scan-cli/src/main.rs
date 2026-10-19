@@ -52,6 +52,11 @@ follow_symlinks = false
 disabled = []
 # If non-empty, only these rule ids run.
 enabled = []
+# Categories to disable, for example: ["resource-usage", "configuration"].
+# See docs/configuration.md for the complete list.
+# disabled_categories = []
+# If non-empty, only rules in these categories run.
+# enabled_categories = []
 # Per-rule severity overrides, for example: { "SS-001" = "critical" }
 # severity_overrides = {}
 # Per-rule confidence overrides, for example: { "SS-007" = "low" }

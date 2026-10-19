@@ -106,6 +106,9 @@ fn flags_the_bad_case() {
 The repository-level corpus test (`tests/corpus.rs`) and quality test
 (`tests/rule_quality.rs`) automatically pick up new rules.
 
+For three fully annotated examples that show the evidence and false-positive
+judgment behind real detectors, see the [rule cookbook](../rules/cookbook.md).
+
 ## 5. Document the rule
 
 Create `docs/rules/detectors/SS-XXX.md` from

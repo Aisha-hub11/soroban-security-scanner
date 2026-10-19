@@ -13,6 +13,7 @@ Start here.
 ## Using the scanner
 
 - [Rules](rules/README.md) — severity, confidence, and the built-in detectors.
+- [Analysis Methodology](analysis-methodology.md) — what static analysis can and cannot prove.
 - [Baselines](baselines.md) — track new vs. known findings.
 - [GitHub Integration](github-integration.md) — Action, SARIF, PR scanning.
 - [GitHub Action](github-action.md) — inputs, outputs, and usage examples.

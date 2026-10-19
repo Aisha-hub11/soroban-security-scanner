@@ -96,10 +96,14 @@ Rules must never fabricate evidence or source locations. When evidence is
 insufficient, prefer `confidence: low` or do not report at all.
 
 See [`../contributors/writing-rules.md`](../contributors/writing-rules.md) for a
-step-by-step guide, [`TEMPLATE.md`](TEMPLATE.md) for the rule document template,
-[`docs/development/testing.md`](../development/testing.md) for the fixture
+step-by-step guide, [`cookbook.md`](cookbook.md) for three annotated end-to-end
+examples, [`TEMPLATE.md`](TEMPLATE.md) for the rule document template,
+[`../development/testing.md`](../development/testing.md) for the fixture
 layout, and [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) for the definition
 of done.
+
+For the limits of the analysis and the meaning of confidence, see
+[Analysis Methodology](../analysis-methodology.md).
 
 ## Rule documentation template
 

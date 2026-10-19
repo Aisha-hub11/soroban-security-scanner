@@ -57,6 +57,93 @@ so results are still published when the gate fails.
 | `files-from` | *(empty)* | File listing files to scan (changed-file analysis). |
 | `args` | *(empty)* | Extra `scan` arguments. |
 
+## Reusable workflow
+
+[`reusable-scan.yml`](../.github/workflows/reusable-scan.yml) packages the same
+scan as the composite action in a `workflow_call` workflow. Consumers do not
+need to copy YAML or build the scanner themselves.
+
+```yaml
+name: Security
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    permissions:
+      contents: read
+    uses: StellarFoundry/soroban-security-scanner/.github/workflows/reusable-scan.yml@main
+    with:
+      path: contracts
+      format: sarif
+      output: soroban-scan-results.sarif
+      fail-on: high
+```
+
+The workflow checks out the caller repository, builds the scanner from source,
+runs the scan from the caller repository root (so paths and configuration
+discovery behave like the action), and uploads the report as the
+`soroban-scan-report` artifact.
+
+### Workflow inputs
+
+| Input | Default | Description |
+| ----- | ------- | ----------- |
+| `path` | `.` | Directory or file to scan. |
+| `format` | `sarif` | `terminal`, `json`, `sarif`, or `markdown`. |
+| `output` | `soroban-scan-results.sarif` | Report path; set to `""` to skip file output. |
+| `fail-on` | `high` | Failure threshold (`none` disables gating). |
+| `baseline` | *(empty)* | Baseline file; gate applies to new findings only. |
+| `files-from` | *(empty)* | File listing files to scan (changed-file analysis). |
+| `args` | *(empty)* | Extra `scan` arguments. |
+| `scanner-repository` | `StellarFoundry/soroban-security-scanner` | Scanner source repository. |
+| `scanner-ref` | `main` | Scanner source ref; override to test unreleased changes. |
+
+Outputs are `exit-code` (the scanner exit code) and `report` (the report path
+when one was written).
+
+### Permissions
+
+The reusable workflow requests only `contents: read` and never requires a
+secret. It does **not** upload SARIF itself, so callers that want code-scanning
+alerts should keep the scan and the upload in separate jobs and grant
+`security-events: write` only to the upload job:
+
+```yaml
+jobs:
+  scan:
+    permissions:
+      contents: read
+    uses: StellarFoundry/soroban-security-scanner/.github/workflows/reusable-scan.yml@main
+    with:
+      path: contracts
+      format: sarif
+
+  upload:
+    needs: scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: soroban-scan-report
+          path: results
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results/soroban-scan-results.sarif
+```
+
+Fork pull requests cannot receive `security-events: write`; guard the upload job
+with the same fork check used by the bundled PR workflow.
+
+This repository exercises the reusable workflow from
+[`security-scan.yml`](../.github/workflows/security-scan.yml) on every push and
+pull request, using the current commit as the scanner source.
+
 ## SARIF and code scanning
 
 Upload SARIF 2.1.0 to surface findings in the repository's **Security → Code

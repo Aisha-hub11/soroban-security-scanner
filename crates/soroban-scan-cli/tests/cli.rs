@@ -674,6 +674,89 @@ fn inline_suppressions_are_applied_and_reported() {
 }
 
 #[test]
+fn category_filters_apply_to_scans() {
+    let dir = std::env::temp_dir().join(format!(
+        "soroban-scan-cli-categories-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    write_suppression_project(&dir, false);
+    let config = dir.join("category-filter.toml");
+
+    // Disabling `authorization` skips SS-001 even when the rule is requested.
+    std::fs::write(
+        &config,
+        "[rules]\ndisabled_categories = [\"authorization\"]\n",
+    )
+    .unwrap();
+    let disabled = run(&[
+        "scan",
+        dir.to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+        "--format",
+        "json",
+        "--rule",
+        "SS-001",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(disabled.code, 0, "{}", disabled.stderr);
+    let value: serde_json::Value = serde_json::from_str(&disabled.stdout).unwrap();
+    assert!(
+        value["findings"].as_array().unwrap().is_empty(),
+        "{}",
+        disabled.stdout
+    );
+
+    // Selecting only `authorization` keeps the same rule active.
+    std::fs::write(
+        &config,
+        "[rules]\nenabled_categories = [\"authorization\"]\n",
+    )
+    .unwrap();
+    let enabled = run(&[
+        "scan",
+        dir.to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+        "--format",
+        "json",
+        "--rule",
+        "SS-001",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(enabled.code, 0, "{}", enabled.stderr);
+    let value: serde_json::Value = serde_json::from_str(&enabled.stdout).unwrap();
+    assert!(rule_ids(&value["findings"]).contains(&"SS-001".to_string()));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn config_validate_rejects_unknown_category() {
+    let dir = std::env::temp_dir().join(format!(
+        "soroban-scan-cli-bad-category-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("bad-category.toml");
+    std::fs::write(&config, "[rules]\ndisabled_categories = [\"nonsense\"]\n").unwrap();
+
+    let out = run(&["config", "validate", "--config", config.to_str().unwrap()]);
+    assert_eq!(out.code, 2, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("unknown category"),
+        "stderr: {}",
+        out.stderr
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn no_config_ignores_discovered_configuration() {
     let dir = std::env::temp_dir().join(format!("soroban-scan-cli-noconf-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

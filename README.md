@@ -187,6 +187,10 @@ require or store keys, does not sign or submit transactions, does not execute
 scanned code, and makes no network requests by default. See
 [`SECURITY.md`](SECURITY.md) and [`docs/security/threat-model.md`](docs/security/threat-model.md).
 
+The scanner is not an audit replacement. [Analysis
+Methodology](docs/analysis-methodology.md) explains what the detectors can and
+cannot prove, and how severity and confidence are assigned.
+
 ## Ecosystem
 
 `soroban-scan` is built for the Stellar/Soroban ecosystem and is designed to sit

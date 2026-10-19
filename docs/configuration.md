@@ -44,6 +44,13 @@ disabled = ["SS-006"]
 # If non-empty, only these rule ids run
 enabled = []
 
+# Categories to disable. Category names are validated when the file is loaded;
+# an unknown category is a usage error. Accepts kebab-case or snake_case.
+disabled_categories = ["resource-usage"]
+
+# If non-empty, only rules in these categories run
+enabled_categories = []
+
 # Per-rule severity overrides
 severity_overrides = { "SS-007" = "low" }
 
@@ -68,13 +75,33 @@ enabled = false
 | `follow_symlinks` | bool | `false` | Follow symlinks (off by default for safety). |
 | `rules.disabled` | array of ids | `[]` | Rules never run. |
 | `rules.enabled` | array of ids | `[]` | If non-empty, the only rules that run. |
+| `rules.disabled_categories` | array of categories | `[]` | Rules in these categories never run. |
+| `rules.enabled_categories` | array of categories | `[]` | If non-empty, only rules in these categories run. |
 | `rules.severity_overrides` | map id→severity | `{}` | Replace a rule's default severity. |
 | `rules.confidence_overrides` | map id→confidence | `{}` | Replace a rule's default confidence. |
 | `ai.enabled` | bool | `false` | Enable the optional assistance layer (fails closed without a provider). |
 | `ai.provider` | string | *(none)* | Provider name; none is bundled. |
 | `ai.model` | string | *(none)* | Model identifier. |
 
-Unknown fields are rejected, as are references to unknown rule ids.
+Unknown fields are rejected, as are references to unknown rule ids or
+categories.
+
+Category filters are applied before per-rule severity and confidence overrides.
+A rule is skipped when it is individually disabled, when it belongs to a
+disabled category, or when `enabled_categories` is non-empty and does not list
+its category. The valid categories are:
+
+`authorization`, `authentication`, `access-control`, `cross-contract`, `token`,
+`storage`, `arithmetic`, `error-handling`, `events`, `resource-usage`,
+`configuration`, `dependencies`, `unsafe`.
+
+For example, this disables all resource-usage heuristics while keeping the rest
+of the default rule set:
+
+```toml
+[rules]
+disabled_categories = ["resource-usage"]
+```
 
 ## Precedence
 
