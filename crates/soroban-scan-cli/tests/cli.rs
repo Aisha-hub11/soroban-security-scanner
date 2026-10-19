@@ -1058,3 +1058,113 @@ fn json_report_records_the_effective_configuration() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn scan_color_never_emits_no_ansi_escapes() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--quiet",
+        "--color",
+        "never",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert!(!out.stdout.contains('\u{1b}'), "got: {:?}", out.stdout);
+}
+
+#[test]
+fn scan_color_always_emits_ansi_for_terminal_format() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--quiet",
+        "--color",
+        "always",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert!(out.stdout.contains('\u{1b}'), "got: {:?}", out.stdout);
+}
+
+#[test]
+fn scan_color_auto_is_plain_when_stdout_is_not_a_tty() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--quiet",
+        "--color",
+        "auto",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert!(!out.stdout.contains('\u{1b}'), "got: {:?}", out.stdout);
+}
+
+#[test]
+fn scan_color_auto_respects_no_color() {
+    let out = run_with_env(
+        &[
+            "scan",
+            fixture("corpus/SS-001").to_str().unwrap(),
+            "--quiet",
+            "--color",
+            "auto",
+            "--fail-on",
+            "none",
+        ],
+        &[("NO_COLOR", "1")],
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert!(!out.stdout.contains('\u{1b}'), "got: {:?}", out.stdout);
+}
+
+#[test]
+fn scan_machine_formats_never_contain_ansi_even_with_color_always() {
+    for format in ["json", "sarif", "markdown", "github"] {
+        let out = run(&[
+            "scan",
+            fixture("corpus/SS-001").to_str().unwrap(),
+            "--format",
+            format,
+            "--color",
+            "always",
+            "--fail-on",
+            "none",
+        ]);
+        assert_eq!(out.code, 0, "format {format}: {}", out.stderr);
+        assert!(
+            !out.stdout.contains('\u{1b}'),
+            "format {format} leaked ANSI: {:?}",
+            out.stdout
+        );
+    }
+}
+
+#[test]
+fn scan_github_format_emits_one_annotation_per_finding() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "github",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert!(!out.stdout.is_empty(), "expected annotation output");
+    for line in out.stdout.lines() {
+        assert!(
+            line.starts_with("::error ")
+                || line.starts_with("::warning ")
+                || line.starts_with("::notice "),
+            "unexpected annotation: {line:?}"
+        );
+        assert!(line.contains("file="), "{line}");
+        assert!(line.contains("line="), "{line}");
+        assert!(line.contains("title="), "{line}");
+    }
+}
