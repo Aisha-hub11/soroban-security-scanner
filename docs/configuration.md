@@ -34,6 +34,9 @@ min_confidence = "low"
 # Glob patterns (relative to the scan root) to exclude from discovery
 exclude = ["vendor/**", "target/**"]
 
+# Skip #[cfg(test)] items and test directories
+exclude_tests = false
+
 # Follow symbolic links during discovery (disabled by default for safety)
 follow_symlinks = false
 
@@ -72,6 +75,7 @@ enabled = false
 | `min_severity` | severity | `info` | Minimum severity to report. |
 | `min_confidence` | confidence | `low` | Minimum confidence to report. |
 | `exclude` | array of globs | `[]` | Paths excluded from discovery. |
+| `exclude_tests` | bool | `false` | Skip `#[cfg(test)]` items and directories named `tests`. |
 | `follow_symlinks` | bool | `false` | Follow symlinks (off by default for safety). |
 | `rules.disabled` | array of ids | `[]` | Rules never run. |
 | `rules.enabled` | array of ids | `[]` | If non-empty, the only rules that run. |

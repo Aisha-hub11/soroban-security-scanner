@@ -41,6 +41,10 @@ pub struct CallFact {
     pub line: usize,
     /// 1-based column.
     pub column: usize,
+    /// Start byte offset in the parsed source, used to order facts.
+    pub start_byte: usize,
+    /// End byte offset in the parsed source.
+    pub end_byte: usize,
     /// Rendered call text (may be truncated by consumers).
     pub text: String,
 }
@@ -72,7 +76,20 @@ pub struct StringFact {
 /// A binary arithmetic fact (`+`, `-`, or `*`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArithFact {
-    /// Operator text (`+`, `-`, or `*`).
+    /// Operator text (`+`, `-`, `*`, or `%`).
+    pub op: String,
+    /// 1-based line.
+    pub line: usize,
+    /// 1-based column.
+    pub column: usize,
+    /// Rendered expression text (may be truncated).
+    pub text: String,
+}
+
+/// A binary comparison fact (`==`, `!=`, `<`, `<=`, `>`, or `>=`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComparisonFact {
+    /// Operator text.
     pub op: String,
     /// 1-based line.
     pub line: usize,
@@ -95,6 +112,12 @@ pub struct Facts {
     pub strings: Vec<StringFact>,
     /// Binary arithmetic operations (`+`, `-`, `*`).
     pub arith: Vec<ArithFact>,
+    /// Binary remainder operations (`%`).
+    pub modulo: Vec<ArithFact>,
+    /// Binary comparison operations.
+    pub comparisons: Vec<ComparisonFact>,
+    /// Method calls on a local cross-contract client variable.
+    pub client_calls: Vec<CallFact>,
     /// Whether the code contains `unsafe`.
     pub has_unsafe: bool,
     /// Locations of `unsafe` constructs.
@@ -155,6 +178,31 @@ impl Facts {
             .collect()
     }
 
+    /// Cross-contract call sites in source order.
+    ///
+    /// Calls through a local client variable are preferred; when none can be
+    /// resolved, constructors are used as a conservative fallback.
+    pub fn ordered_cross_contract_calls(&self) -> Vec<&CallFact> {
+        let mut calls: Vec<&CallFact> = if self.client_calls.is_empty() {
+            self.cross_contract_constructors()
+        } else {
+            self.client_calls.iter().collect()
+        };
+        calls.sort_by_key(|c| (c.start_byte, c.line, c.column));
+        calls
+    }
+
+    /// Ledger accessor calls (`ledger().timestamp()` / `ledger().sequence()`).
+    pub fn ledger_accesses(&self) -> Vec<&CallFact> {
+        self.method_calls
+            .iter()
+            .filter(|c| {
+                (c.name == "timestamp" || c.name == "sequence")
+                    && c.context.to_ascii_lowercase().contains("ledger")
+            })
+            .collect()
+    }
+
     /// Panic-prone calls and macros.
     pub fn panics(&self) -> Vec<(&str, usize, usize, &str)> {
         let mut found: Vec<(&str, usize, usize, &str)> = Vec::new();
@@ -182,6 +230,7 @@ impl Facts {
 struct FactsVisitor {
     facts: Facts,
     unsafe_depth: usize,
+    client_vars: BTreeSet<String>,
 }
 
 fn span_line_col<T: Spanned>(node: &T) -> (usize, usize) {
@@ -200,14 +249,50 @@ fn truncate(text: &str, max: usize) -> String {
 impl<'ast> Visit<'ast> for FactsVisitor {
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         let (line, column) = span_line_col(node);
-        self.facts.method_calls.push(CallFact {
+        let span = node.span().byte_range();
+        let receiver_ident = match &*node.receiver {
+            syn::Expr::Path(path) if path.path.segments.len() == 1 => {
+                Some(path.path.segments[0].ident.to_string())
+            }
+            _ => None,
+        };
+        let is_client_call = receiver_ident
+            .as_ref()
+            .is_some_and(|name| self.client_vars.contains(name));
+        let fact = CallFact {
             name: node.method.to_string(),
             context: node.receiver.to_token_stream().to_string(),
             line,
             column,
+            start_byte: span.start,
+            end_byte: span.end,
             text: truncate(&node.to_token_stream().to_string(), 160),
-        });
+        };
+        if is_client_call {
+            self.facts.client_calls.push(fact.clone());
+        }
+        self.facts.method_calls.push(fact);
         visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        if let (syn::Pat::Ident(pattern), Some(init)) = (&node.pat, &node.init) {
+            if let syn::Expr::Call(call) = &*init.expr {
+                if let syn::Expr::Path(path) = &*call.func {
+                    let name = path
+                        .path
+                        .segments
+                        .last()
+                        .map(|segment| segment.ident.to_string())
+                        .unwrap_or_default();
+                    let context = path.path.to_token_stream().to_string();
+                    if name == "new" && context.contains("Client") {
+                        self.client_vars.insert(pattern.ident.to_string());
+                    }
+                }
+            }
+        }
+        visit::visit_local(self, node);
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
@@ -219,11 +304,14 @@ impl<'ast> Visit<'ast> for FactsVisitor {
                 .last()
                 .map(|s| s.ident.to_string())
                 .unwrap_or_default();
+            let span = node.span().byte_range();
             self.facts.function_calls.push(CallFact {
                 name,
                 context: path.path.to_token_stream().to_string(),
                 line,
                 column,
+                start_byte: span.start,
+                end_byte: span.end,
                 text: truncate(&node.to_token_stream().to_string(), 160),
             });
         }
@@ -260,19 +348,45 @@ impl<'ast> Visit<'ast> for FactsVisitor {
     }
 
     fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
-        let op = match node.op {
+        let (line, column) = span_line_col(node);
+        let text = truncate(&node.to_token_stream().to_string(), 160);
+        let arithmetic_op = match node.op {
             syn::BinOp::Add(_) => Some("+"),
             syn::BinOp::Sub(_) => Some("-"),
             syn::BinOp::Mul(_) => Some("*"),
             _ => None,
         };
-        if let Some(op) = op {
-            let (line, column) = span_line_col(node);
+        if let Some(op) = arithmetic_op {
             self.facts.arith.push(ArithFact {
                 op: op.to_string(),
                 line,
                 column,
-                text: truncate(&node.to_token_stream().to_string(), 160),
+                text: text.clone(),
+            });
+        }
+        if matches!(node.op, syn::BinOp::Rem(_)) {
+            self.facts.modulo.push(ArithFact {
+                op: "%".to_string(),
+                line,
+                column,
+                text: text.clone(),
+            });
+        }
+        let comparison_op = match node.op {
+            syn::BinOp::Eq(_) => Some("=="),
+            syn::BinOp::Ne(_) => Some("!="),
+            syn::BinOp::Lt(_) => Some("<"),
+            syn::BinOp::Le(_) => Some("<="),
+            syn::BinOp::Gt(_) => Some(">"),
+            syn::BinOp::Ge(_) => Some(">="),
+            _ => None,
+        };
+        if let Some(op) = comparison_op {
+            self.facts.comparisons.push(ComparisonFact {
+                op: op.to_string(),
+                line,
+                column,
+                text,
             });
         }
         visit::visit_expr_binary(self, node);
@@ -418,6 +532,9 @@ fn merge_facts(dst: &mut Facts, src: &Facts) {
     dst.macros.extend(src.macros.iter().cloned());
     dst.strings.extend(src.strings.iter().cloned());
     dst.arith.extend(src.arith.iter().cloned());
+    dst.modulo.extend(src.modulo.iter().cloned());
+    dst.comparisons.extend(src.comparisons.iter().cloned());
+    dst.client_calls.extend(src.client_calls.iter().cloned());
     dst.has_unsafe |= src.has_unsafe;
     dst.unsafe_locations
         .extend(src.unsafe_locations.iter().copied());
@@ -549,6 +666,32 @@ mod tests {
             .map(|f| f.op.as_str())
             .collect();
         assert_eq!(ops, vec!["-", "+", "*"]);
+    }
+
+    #[test]
+    fn detects_modulo_comparisons_and_ledger_accesses() {
+        let facts = facts_of(
+            "fn f(env: Env) -> bool { env.ledger().timestamp() % 10 > 3 && env.ledger().sequence() == 7 }",
+        );
+        assert_eq!(facts.modulo.len(), 1);
+        assert_eq!(facts.comparisons.len(), 2);
+        let accesses: Vec<_> = facts
+            .ledger_accesses()
+            .iter()
+            .map(|call| call.name.as_str())
+            .collect();
+        assert_eq!(accesses, vec!["timestamp", "sequence"]);
+    }
+
+    #[test]
+    fn resolves_cross_contract_client_calls_in_source_order() {
+        let facts = facts_of(
+            "fn f(env: Env) { let client = TokenClient::new(&env, &id); client.transfer(&a, &b, &c); }",
+        );
+        let calls = facts.ordered_cross_contract_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "transfer");
+        assert!(calls[0].start_byte > 0);
     }
 
     #[test]

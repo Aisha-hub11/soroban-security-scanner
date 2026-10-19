@@ -29,11 +29,12 @@ roots in one run.
 
 | Option | Description |
 | ------ | ----------- |
-| `--format <terminal\|json\|sarif\|markdown>` | Output format (default `terminal`). |
+| `--format <terminal\|json\|sarif\|markdown\|github>` | Output format (default `terminal`). |
 | `--output <FILE>` | Write the report to a file instead of stdout. |
 | `--min-severity <LEVEL>` | Only report findings at or above this severity. |
 | `--min-confidence <LEVEL>` | Only report findings at or above this confidence. |
 | `--exclude <GLOB>` | Exclude a glob relative to the scan root (repeatable). |
+| `--exclude-tests` | Skip items gated behind `#[cfg(test)]` and files in test directories. |
 | `--config <FILE>` | Use a specific configuration file. |
 | `--no-config` | Ignore discovered configuration and use built-in defaults (mutually exclusive with `--config`). |
 | `--files-from <FILE>` | Read a newline-separated list of files to scan (relative to `PATH`). |
@@ -57,6 +58,32 @@ suppress a single finding at that location. Suppressed findings are excluded
 from the `--fail-on` gate but never dropped from the report: terminal, JSON,
 SARIF and Markdown output all list them together with the directive that
 suppressed them. See [Inline Suppressions](suppressions.md).
+
+### Excluding test code
+
+`--exclude-tests` removes the most common source of noise in one step:
+
+- Items gated behind `#[cfg(test)]` (including entire `#[cfg(test)] mod tests`
+  blocks) are pruned before analysis.
+- Directories named `tests` are skipped during discovery.
+- Production code is never excluded; `#[cfg(not(test))]` items are kept.
+
+```bash
+soroban-scan scan ./contracts --exclude-tests
+```
+
+### GitHub workflow annotations
+
+`--format github` emits one GitHub Actions workflow command per finding, with
+the file, line, optional column/end position, a title, and a message:
+
+```text
+::error file=src/lib.rs,line=42,col=9,title=SS-001: State-changing entry point without caller authorization::SS-001: State-changing entry point without caller authorization — ...
+```
+
+Severity maps to `error` (critical/high), `warning` (medium), or `notice`
+(low/info). All user-controlled text is escaped according to GitHub's
+workflow-command rules, so scanned paths or source text cannot inject commands.
 
 ### Scanning multiple paths
 
@@ -212,6 +239,8 @@ network access.
   used for the scan, excluding environment data and secrets.
 - **sarif** — SARIF 2.1.0 for GitHub code scanning and compatible tools.
 - **markdown** — report suitable for pull requests and documentation.
+- **github** — GitHub Actions workflow-command annotations (`::error`,
+  `::warning`, `::notice`).
 
 ## Severity and confidence
 

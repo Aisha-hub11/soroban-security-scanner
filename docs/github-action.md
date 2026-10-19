@@ -46,7 +46,7 @@ jobs:
 | Input | Description | Required | Default |
 | ----- | ----------- | -------- | ------- |
 | `path` | Directory or file to scan. | no | `.` |
-| `format` | Output format: `terminal`, `json`, `sarif`, or `markdown`. | no | `sarif` |
+| `format` | Output format: `terminal`, `json`, `sarif`, `markdown`, or `github`. | no | `sarif` |
 | `output` | File to write the report to when the format is machine-readable. | no | `soroban-scan-results.sarif` |
 | `fail-on` | Failure threshold: `none`, `info`, `low`, `medium`, `high`, `critical`. | no | `high` |
 | `baseline` | Optional baseline file; when set, only **new** findings fail the gate. | no | `""` |

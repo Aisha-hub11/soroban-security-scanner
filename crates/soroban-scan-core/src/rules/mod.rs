@@ -10,7 +10,9 @@ pub mod util;
 pub mod validation;
 
 mod cross_contract_auth;
+mod cross_contract_before_state_update;
 mod hardcoded_address;
+mod insecure_randomness;
 mod missing_authorization;
 mod panic_prone;
 mod public_test_hooks;
@@ -35,8 +37,12 @@ pub fn register_all(registry: &mut RuleRegistry) -> Result<(), RegistryError> {
     registry.register(Box::new(ttl_management::TtlManagement))?;
     registry.register(Box::new(hardcoded_address::HardcodedAddress))?;
     registry.register(Box::new(unchecked_arithmetic::UncheckedArithmetic))?;
+    registry.register(Box::new(insecure_randomness::InsecureRandomness))?;
     registry.register(Box::new(public_test_hooks::PublicTestHooks))?;
     registry.register(Box::new(unprotected_initializer::UnprotectedInitializer))?;
+    registry.register(Box::new(
+        cross_contract_before_state_update::CrossContractBeforeStateUpdate,
+    ))?;
     Ok(())
 }
 
@@ -52,7 +58,7 @@ mod tests {
             ids,
             vec![
                 "SS-001", "SS-002", "SS-003", "SS-004", "SS-005", "SS-006", "SS-007", "SS-008",
-                "SS-011", "SS-029"
+                "SS-009", "SS-011", "SS-013", "SS-029"
             ]
         );
     }

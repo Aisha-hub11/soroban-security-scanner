@@ -427,9 +427,19 @@ fn merge_projects(projects: Vec<Project>) -> Project {
 /// is treated as Soroban when the source contains a Soroban SDK dependency
 /// marker (assumed) or a contract definition.
 pub fn synthetic_loaded(src: &str, file_name: &str) -> LoadedProject {
+    synthetic_loaded_with_options(src, file_name, false)
+}
+
+/// Builds a synthetic single-file project, optionally pruning `#[cfg(test)]`
+/// items before analysis.
+pub fn synthetic_loaded_with_options(
+    src: &str,
+    file_name: &str,
+    exclude_tests: bool,
+) -> LoadedProject {
     let root = std::path::PathBuf::from(".");
     let path = std::path::PathBuf::from(file_name);
-    let parsed = crate::source::parse_source(&path, &root, src);
+    let parsed = crate::source::parse_source_with_options(&path, &root, src, exclude_tests);
 
     let mut diagnostics = Vec::new();
     if let Some(err) = &parsed.parse_error {
@@ -470,7 +480,11 @@ pub fn scan_source_str(
     config: &ScanConfig,
     registry: &RuleRegistry,
 ) -> ScanOutcome {
-    scan(&synthetic_loaded(src, file_name), registry, config)
+    scan(
+        &synthetic_loaded_with_options(src, file_name, config.exclude_tests),
+        registry,
+        config,
+    )
 }
 
 #[cfg(test)]

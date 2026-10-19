@@ -45,7 +45,7 @@ pub fn load(root: &Path, opts: &DiscoveryOptions) -> Result<LoadedProject, ScanE
     }
 
     let (sources, source_diagnostics) =
-        source::load_sources(&discovered.rust_files, &manifests, root);
+        source::load_sources(&discovered.rust_files, &manifests, root, opts.exclude_tests);
     diagnostics.extend(source_diagnostics);
 
     let soroban = soroban::analyze_manifests(&manifests);
@@ -72,6 +72,18 @@ pub fn load_project(root: &Path, opts: &DiscoveryOptions) -> Result<Project, Sca
 /// Used when scanning individual files. The root manifest, if present, is
 /// consulted for Soroban dependency evidence.
 pub fn load_files(root: &Path, files: &[PathBuf]) -> Result<LoadedProject, ScanError> {
+    load_files_with_options(root, files, &DiscoveryOptions::default())
+}
+
+/// Loads a specific set of source files with discovery options.
+///
+/// Used when scanning individual files with `--exclude-tests`; the options
+/// control whether `#[cfg(test)]` items are pruned from parsed sources.
+pub fn load_files_with_options(
+    root: &Path,
+    files: &[PathBuf],
+    opts: &DiscoveryOptions,
+) -> Result<LoadedProject, ScanError> {
     let mut manifests = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -87,7 +99,8 @@ pub fn load_files(root: &Path, files: &[PathBuf]) -> Result<LoadedProject, ScanE
         }
     }
 
-    let (sources, source_diagnostics) = source::load_sources(files, &manifests, root);
+    let (sources, source_diagnostics) =
+        source::load_sources(files, &manifests, root, opts.exclude_tests);
     diagnostics.extend(source_diagnostics);
 
     let soroban = soroban::analyze_manifests(&manifests);
