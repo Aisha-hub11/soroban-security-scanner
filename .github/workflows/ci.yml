@@ -55,6 +55,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all --all-features
 
+  docs:
+    name: Documentation links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: python tools/check_docs.py
+
   deny:
     name: Dependency audit
     runs-on: ubuntu-latest

@@ -21,6 +21,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  reusable-workflow:
+    name: Reusable workflow smoke scan
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable-scan.yml
+    with:
+      path: examples/clean-contract
+      format: terminal
+      output: ""
+      fail-on: high
+      # Exercise the workflow from this commit rather than the published main.
+      scanner-repository: ${{ github.repository }}
+      scanner-ref: ${{ github.sha }}
+
   scan:
     name: Scan examples
     runs-on: ubuntu-latest

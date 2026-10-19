@@ -192,12 +192,15 @@ follow_symlinks = false
 [rules]
 disabled = ["SS-006"]
 enabled = []
+disabled_categories = ["resource-usage"]
+enabled_categories = []
 severity_overrides = { "SS-007" = "low" }
 confidence_overrides = { }
 ```
 
-Unknown fields are rejected. Repository-provided configuration is treated as
-untrusted data and cannot enable code execution or network access.
+Unknown fields, rule ids, and category names are rejected. Repository-provided
+configuration is treated as untrusted data and cannot enable code execution or
+network access.
 
 ---
 

@@ -1,0 +1,145 @@
+name: Reusable Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: "Directory or file to scan, relative to the caller repository root."
+        required: false
+        type: string
+        default: "."
+      format:
+        description: "Output format: terminal, json, sarif, or markdown."
+        required: false
+        type: string
+        default: "sarif"
+      output:
+        description: "Report path, relative to the caller repository root. Set to an empty string to skip file output."
+        required: false
+        type: string
+        default: "soroban-scan-results.sarif"
+      fail-on:
+        description: "Failure threshold: none, info, low, medium, high, or critical."
+        required: false
+        type: string
+        default: "high"
+      baseline:
+        description: "Optional baseline file, relative to the caller repository root."
+        required: false
+        type: string
+        default: ""
+      files-from:
+        description: "Optional file listing files to scan, relative to the caller repository root."
+        required: false
+        type: string
+        default: ""
+      args:
+        description: "Additional arguments passed to `soroban-scan scan`."
+        required: false
+        type: string
+        default: ""
+      scanner-repository:
+        description: "Scanner source repository. Override when testing a fork or a pinned copy."
+        required: false
+        type: string
+        default: "StellarFoundry/soroban-security-scanner"
+      scanner-ref:
+        description: "Scanner source ref. Override together with scanner-repository to test unreleased changes."
+        required: false
+        type: string
+        default: "main"
+    outputs:
+      exit-code:
+        description: "Scanner exit code (0 = no failing findings, 1 = failing findings)."
+        value: ${{ jobs.scan.outputs.exit-code }}
+      report:
+        description: "Report path when one was written; otherwise empty."
+        value: ${{ jobs.scan.outputs.report }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scan:
+    name: Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      exit-code: ${{ steps.scan.outputs.exit-code }}
+      report: ${{ steps.scan.outputs.report }}
+    steps:
+      - name: Checkout repository under scan
+        uses: actions/checkout@v5
+        with:
+          path: scan-target
+
+      - name: Checkout scanner source
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.scanner-repository }}
+          ref: ${{ inputs.scanner-ref }}
+          path: .soroban-scanner
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .soroban-scanner
+
+      - name: Build scanner
+        working-directory: .soroban-scanner
+        run: cargo build --release -p soroban-scan-cli
+
+      - name: Run scan
+        id: scan
+        working-directory: scan-target
+        shell: bash
+        env:
+          SCAN_PATH: ${{ inputs.path }}
+          SCAN_FORMAT: ${{ inputs.format }}
+          SCAN_OUTPUT: ${{ inputs.output }}
+          SCAN_FAIL_ON: ${{ inputs.fail-on }}
+          SCAN_BASELINE: ${{ inputs.baseline }}
+          SCAN_FILES_FROM: ${{ inputs.files-from }}
+          SCAN_ARGS: ${{ inputs.args }}
+        run: |
+          set -uo pipefail
+          scanner="$GITHUB_WORKSPACE/.soroban-scanner/target/release/soroban-scan"
+
+          extra=()
+          if [ -n "${SCAN_OUTPUT}" ]; then
+            extra+=(--output "${SCAN_OUTPUT}")
+          fi
+          if [ -n "${SCAN_BASELINE}" ]; then
+            extra+=(--baseline "${SCAN_BASELINE}")
+          fi
+          if [ -n "${SCAN_FILES_FROM}" ]; then
+            extra+=(--files-from "${SCAN_FILES_FROM}")
+          fi
+
+          # SCAN_ARGS is intentionally word-split to allow multiple flags.
+          # shellcheck disable=SC2086
+          "${scanner}" scan "${SCAN_PATH}" \
+            --format "${SCAN_FORMAT}" \
+            --fail-on "${SCAN_FAIL_ON}" \
+            ${SCAN_ARGS} \
+            "${extra[@]}"
+          code=$?
+
+          echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
+          if [ -n "${SCAN_OUTPUT}" ]; then
+            echo "report=${SCAN_OUTPUT}" >> "$GITHUB_OUTPUT"
+          fi
+          exit "${code}"
+
+      - name: Upload report
+        if: always() && inputs.output != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: soroban-scan-report
+          path: scan-target/${{ inputs.output }}
+          if-no-files-found: ignore
+          retention-days: 7

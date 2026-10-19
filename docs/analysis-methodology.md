@@ -1,0 +1,169 @@
+# Analysis Methodology
+
+`soroban-scan` is a static analyzer. This document explains what that means in
+practice: what the scanner can prove, what it cannot prove, and how it decides
+how much confidence to place in a finding.
+
+> **The scanner is not an audit replacement.** A clean scan means the detectors
+> found no matching evidence in the analyzed files. It does not mean the
+> contract is secure, correct, or free of exploitable bugs. Use the scanner
+> alongside threat modeling, tests, and professional review.
+
+## What the scanner does
+
+The pipeline is deliberately small and deterministic:
+
+1. **Discover** Rust source files and manifests under the scan root.
+2. **Classify** the project as a Soroban contract, a likely Soroban project, or
+   generic Rust. Most detectors only run for confirmed Soroban projects.
+3. **Parse** each file with `syn`. Parse failures are diagnostics, not crashes.
+4. **Extract facts** from the syntax tree: function signatures, method calls,
+   macros, string literals, arithmetic operators, `unsafe` blocks, and
+   `require_auth` calls.
+5. **Summarize helpers.** Same-file helper functions are followed up to a small
+   depth so a `require_auth` or TTL call in a helper can satisfy a check.
+6. **Run detectors.** Each detector appends findings with evidence and a source
+   location.
+7. **Validate and filter.** Findings outside the analyzed file set, findings
+   without evidence, and findings below the configured thresholds are removed.
+8. **Apply policy.** Rule and category filters, severity and confidence
+   overrides, baselines, and inline suppressions are applied in that order where
+   relevant.
+
+The scanner never compiles, executes, deploys, signs, or mutates the code it
+analyzes. It makes no network requests.
+
+## What static analysis can establish
+
+Static analysis can establish facts about the source text with high precision:
+
+- A public function exists in a `#[contractimpl]` block.
+- A call such as `env.storage().persistent().set(...)` appears in a function.
+- A function contains no `require_auth` call and no same-file helper that does.
+- A string literal matches the shape of a Stellar account or contract address.
+- A value is written to persistent storage without a TTL call in the same
+  analyzed scope.
+
+These are **presence and absence facts about syntax**, not statements about
+runtime behavior. They are reproducible: the same source and configuration
+produce the same findings in the same order.
+
+## What static analysis cannot establish
+
+The scanner cannot generally prove:
+
+- **Exploitability.** A missing authorization check is a risk only if an
+  attacker can reach the function and the state change matters. The scanner
+  does not model attackers or economic incentives.
+- **Reachability across files or contracts.** Helper summaries stop at file
+  boundaries and at a bounded depth. Authorization or TTL management in another
+  module, contract, or deployment script is invisible.
+- **Runtime values.** Addresses, balances, flags, and storage keys are not
+  evaluated. A constant that looks dangerous may be unreachable; a dynamic value
+  that is dangerous may look harmless.
+- **Macro-generated code.** Code produced by procedural macros is not expanded
+  by the parser. A detector sees the macro invocation, not what it expands to.
+- **Absence of all vulnerabilities.** The rule set is finite and intentionally
+  conservative. No finding is not a proof of safety.
+- **Business-logic correctness.** The scanner has no specification of what the
+  contract is supposed to do.
+
+When a question requires runtime behavior, external state, or cross-contract
+reasoning, the honest answer is "needs human review", not a stronger finding.
+
+## How confidence is assigned
+
+Severity and confidence answer different questions:
+
+- **Severity** is the potential impact if the finding is real.
+- **Confidence** is how certain the detector is that the reported pattern is
+  genuinely present and relevant, given the evidence it can observe.
+
+| Confidence | Meaning | Typical evidence |
+| ---------- | ------- | ---------------- |
+| `high` | Direct, unambiguous evidence in the analyzed source | A literal `unsafe` block, or a direct syntactic construct with no plausible benign reading |
+| `medium` | Strong evidence, but context or an assumption is required | A public state-changing entry point with no authorization anywhere in the analyzed scope |
+| `low` | Heuristic; may be a false positive; requires human review | A persistent write whose TTL may be managed elsewhere |
+
+Confidence is not a function of severity. A high-impact issue detected only by a
+heuristic is reported as `severity: high, confidence: low`, never as
+`confidence: high`. This is intentional: overstating confidence is a security
+problem of its own because it encourages users to skip review.
+
+## Worked examples
+
+### SS-001: structural evidence with a context gap
+
+[SS-001](rules/detectors/SS-001.md) reports a public entry point that mutates
+storage and has no `require_auth` or `require_auth_for_args` in its body or in
+same-file helpers.
+
+The detector can prove:
+
+- the function is public and inside a contract implementation;
+- it performs a storage mutation;
+- the analyzed function and its same-file helper closure contain no
+  authorization call.
+
+It cannot prove:
+
+- that no authorization happens in a callee in another file or contract;
+- that the function is intentionally permissionless;
+- that an attacker can actually reach the state change.
+
+That gap is why the default confidence is `medium` rather than `high`. The
+positive fixture is
+[`fixtures/corpus/SS-001/positive.rs`](../fixtures/corpus/SS-001/positive.rs);
+the negative fixture shows both direct and helper-based authorization.
+
+### SS-006: heuristic evidence with a policy gap
+
+[SS-006](rules/detectors/SS-006.md) reports a persistent-storage write with no
+TTL management in the same function or same-file helper closure.
+
+The detector can prove:
+
+- the write targets persistent storage;
+- no `extend_ttl`, `set_ttl`, or `bump` call appears in the analyzed scope.
+
+It cannot prove:
+
+- that TTL is not extended by a maintenance entry point or another module;
+- that the stored value must survive long enough to need extension;
+- that the contract's TTL policy is wrong.
+
+That gap is why the default confidence is `low`. The positive and negative
+fixtures are under
+[`fixtures/corpus/SS-006/`](../fixtures/corpus/SS-006/). The rule is still
+useful because the pattern is cheap to check and the consequences of expired
+persistent data can be severe.
+
+## Suppressions, baselines, and configuration
+
+The scanner provides explicit mechanisms for reviewed exceptions:
+
+- **Inline suppressions** exclude a finding from the gate while still reporting
+  it, together with the directive and reason. See
+  [Inline Suppressions](suppressions.md).
+- **Baselines** separate new findings from known findings without hiding either.
+  See [Baselines](baselines.md).
+- **Rule and category filters** let a project choose which detectors run. See
+  [Configuration](configuration.md).
+
+None of these mechanisms changes the underlying evidence. They record a policy
+decision; they do not make the code safe.
+
+## Responsible use
+
+- Treat findings as leads, not verdicts. Confirm the data flow, reachability,
+  and intended business behavior.
+- Keep the scanner's confidence honest when adding rules. A rule that cannot
+  distinguish benign from dangerous patterns should be `low` confidence.
+- Run the scanner in CI to catch regressions, not as the only security control.
+- For high-value contracts, combine static analysis with tests, fuzzing, threat
+  modeling, and an independent audit.
+
+See [the rule system](rules/README.md) for detector details, the
+[rule cookbook](rules/cookbook.md) for worked detection examples, and
+[the security model](security/security-model.md) for the scanner's trust
+boundaries.

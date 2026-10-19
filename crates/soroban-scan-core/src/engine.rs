@@ -127,7 +127,7 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
 
     for rule in registry.rules() {
         let meta = rule.metadata();
-        if !rule.enabled_by_default() || !config.rules.is_enabled(meta.id) {
+        if !rule.enabled_by_default() || !config.rules.is_rule_enabled(meta.id, meta.category) {
             stats.rules_skipped += 1;
             continue;
         }
@@ -625,6 +625,89 @@ mod tests {
         };
         let outcome = scan(&loaded, &registry, &config);
         assert!(outcome.findings.is_empty());
+        assert_eq!(outcome.stats.rules_skipped, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disabled_categories_are_skipped() {
+        let root = project_fixture("disabled-category");
+        let loaded = project::load(&root, &ScanConfig::default().discovery_options()).unwrap();
+        let mut registry = RuleRegistry::new();
+        registry
+            .register(Box::new(OneFindingRule::new(Severity::High)))
+            .unwrap();
+        let config = ScanConfig {
+            rules: crate::config::RulesConfig {
+                disabled_categories: vec![Category::Authorization],
+                ..crate::config::RulesConfig::default()
+            },
+            ..ScanConfig::default()
+        };
+        let outcome = scan(&loaded, &registry, &config);
+        assert!(outcome.findings.is_empty());
+        assert_eq!(outcome.stats.rules_skipped, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enabled_categories_limit_rule_selection() {
+        let root = project_fixture("enabled-category");
+        let loaded = project::load(&root, &ScanConfig::default().discovery_options()).unwrap();
+        let mut registry = RuleRegistry::new();
+        registry
+            .register(Box::new(OneFindingRule::new(Severity::High)))
+            .unwrap();
+
+        // The rule is in `authorization`, so a different category excludes it.
+        let other = ScanConfig {
+            rules: crate::config::RulesConfig {
+                enabled_categories: vec![Category::Storage],
+                ..crate::config::RulesConfig::default()
+            },
+            ..ScanConfig::default()
+        };
+        let skipped = scan(&loaded, &registry, &other);
+        assert!(skipped.findings.is_empty());
+        assert_eq!(skipped.stats.rules_skipped, 1);
+
+        // Selecting the matching category runs it.
+        let matching = ScanConfig {
+            rules: crate::config::RulesConfig {
+                enabled_categories: vec![Category::Authorization],
+                ..crate::config::RulesConfig::default()
+            },
+            ..ScanConfig::default()
+        };
+        let ran = scan(&loaded, &registry, &matching);
+        assert_eq!(ran.findings.len(), 1);
+        assert_eq!(ran.stats.rules_run, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn category_filters_apply_before_severity_overrides() {
+        let root = project_fixture("category-overrides");
+        let loaded = project::load(&root, &ScanConfig::default().discovery_options()).unwrap();
+        let mut registry = RuleRegistry::new();
+        registry
+            .register(Box::new(OneFindingRule::new(Severity::Low)))
+            .unwrap();
+        let config = ScanConfig {
+            rules: crate::config::RulesConfig {
+                disabled_categories: vec![Category::Authorization],
+                severity_overrides: [("SS-001".to_string(), Severity::Critical)]
+                    .into_iter()
+                    .collect(),
+                ..crate::config::RulesConfig::default()
+            },
+            ..ScanConfig::default()
+        };
+        let outcome = scan(&loaded, &registry, &config);
+        assert!(
+            outcome.findings.is_empty(),
+            "a category-disabled rule must not be rescued by a severity override"
+        );
         assert_eq!(outcome.stats.rules_skipped, 1);
         let _ = std::fs::remove_dir_all(&root);
     }

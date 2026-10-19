@@ -5,11 +5,27 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ai::AiConfig;
+use crate::category::Category;
 use crate::confidence::Confidence;
 use crate::severity::Severity;
+
+/// Deserializes category names, accepting both kebab-case and snake_case.
+///
+/// Categories are validated here so an unknown name is a configuration error
+/// rather than a silently ignored filter.
+fn deserialize_categories<'de, D>(deserializer: D) -> Result<Vec<Category>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let names = Vec::<String>::deserialize(deserializer)?;
+    names
+        .into_iter()
+        .map(|name| name.parse::<Category>().map_err(serde::de::Error::custom))
+        .collect()
+}
 
 /// Rule selection and overrides.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +35,12 @@ pub struct RulesConfig {
     pub disabled: Vec<String>,
     /// If non-empty, only these rule ids are enabled.
     pub enabled: Vec<String>,
+    /// Categories to disable.
+    #[serde(deserialize_with = "deserialize_categories")]
+    pub disabled_categories: Vec<Category>,
+    /// If non-empty, only rules in these categories are enabled.
+    #[serde(deserialize_with = "deserialize_categories")]
+    pub enabled_categories: Vec<Category>,
     /// Per-rule severity overrides.
     pub severity_overrides: BTreeMap<String, Severity>,
     /// Per-rule confidence overrides.
@@ -35,6 +57,25 @@ impl RulesConfig {
             return self.enabled.iter().any(|r| r == id);
         }
         true
+    }
+
+    /// Returns true if the category is enabled under this configuration.
+    ///
+    /// Disabled categories always win. When `enabled_categories` is non-empty,
+    /// a rule must also belong to one of the listed categories.
+    pub fn is_category_enabled(&self, category: Category) -> bool {
+        if self.disabled_categories.contains(&category) {
+            return false;
+        }
+        if !self.enabled_categories.is_empty() {
+            return self.enabled_categories.contains(&category);
+        }
+        true
+    }
+
+    /// Returns true if a rule is enabled by id and category.
+    pub fn is_rule_enabled(&self, id: &str, category: Category) -> bool {
+        self.is_enabled(id) && self.is_category_enabled(category)
     }
 }
 
@@ -136,6 +177,62 @@ disabled = ["SS-010"]
         .unwrap();
         assert_eq!(config.min_severity, Severity::Medium);
         assert!(!config.rules.is_enabled("SS-010"));
+    }
+
+    #[test]
+    fn parses_and_applies_category_filters() {
+        let config = ScanConfig::from_toml(
+            r#"
+[rules]
+disabled_categories = ["resource-usage"]
+enabled_categories = ["authorization", "storage"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.rules.disabled_categories,
+            vec![Category::ResourceUsage]
+        );
+        assert_eq!(
+            config.rules.enabled_categories,
+            vec![Category::Authorization, Category::Storage]
+        );
+        assert!(!config.rules.is_category_enabled(Category::ResourceUsage));
+        assert!(config.rules.is_category_enabled(Category::Authorization));
+        assert!(config.rules.is_category_enabled(Category::Storage));
+        assert!(!config.rules.is_category_enabled(Category::Arithmetic));
+    }
+
+    #[test]
+    fn accepts_snake_case_category_names() {
+        let config = ScanConfig::from_toml(
+            r#"
+[rules]
+disabled_categories = ["resource_usage", "access_control"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.rules.disabled_categories,
+            vec![Category::ResourceUsage, Category::AccessControl]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_category() {
+        let err = ScanConfig::from_toml(
+            r#"
+[rules]
+disabled_categories = ["nonsense"]
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::error::ScanError::Config(_)));
+        assert!(
+            err.to_string().contains("unknown category"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
