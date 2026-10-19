@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `rules --format markdown` emits the rule catalog table used in
+  `docs/rules/README.md`, so the documentation table can be generated from the
+  registry in CI instead of edited by hand.
+- Markdown scan reports now include `Top rules` and `Categories` summary tables,
+  counted deterministically and sorted by count then id or name.
+- `init --interactive` asks for minimum severity, enabled categories, and exclude
+  globs, then writes a valid configuration. Non-interactive `init` is unchanged,
+  prompts are suppressed when stdin is not a terminal, and piped answers are
+  still supported for tests and scripted setup.
+- A security regression issue template captures the rule id, minimal source,
+  expected and actual behavior, and the Soroban SDK version, and directs
+  confidential reports to the security policy.
 - `--max-findings N` for `scan`: bounds the rendered report after the
   deterministic sort, prints an explicit omitted-findings notice in every
   format, and exposes `truncation` (`shown`, `total`, `omitted`) in JSON and

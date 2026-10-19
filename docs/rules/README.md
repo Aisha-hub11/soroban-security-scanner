@@ -68,6 +68,13 @@ heuristically is reported as `severity: high, confidence: low`, never
 Each detector has a positive and negative fixture under
 `fixtures/corpus/<RULE-ID>/`.
 
+The table above can be regenerated from the rule registry instead of being
+edited by hand:
+
+```bash
+soroban-scan rules --format markdown
+```
+
 ## Registry introspection API
 
 `RuleRegistry` exposes a small, read-only API so tooling (the `rules` command,
