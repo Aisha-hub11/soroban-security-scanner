@@ -32,6 +32,8 @@ pub struct DiscoveryOptions {
     pub follow_symlinks: bool,
     /// Glob patterns (relative to the scan root) to exclude.
     pub exclude: Vec<String>,
+    /// Skip test directories (any directory named `tests`).
+    pub exclude_tests: bool,
 }
 
 /// Files discovered during a scan.
@@ -56,8 +58,8 @@ pub fn compile_excludes(patterns: &[String]) -> Result<GlobSet, ScanError> {
         .map_err(|e| ScanError::Config(format!("invalid exclude globs: {e}")))
 }
 
-fn is_ignored_dir(name: &str) -> bool {
-    DEFAULT_IGNORED_DIRS.contains(&name)
+fn is_ignored_dir(name: &str, exclude_tests: bool) -> bool {
+    DEFAULT_IGNORED_DIRS.contains(&name) || (exclude_tests && name == "tests")
 }
 
 fn to_slash(path: &Path) -> String {
@@ -89,7 +91,7 @@ pub fn discover(root: &Path, opts: &DiscoveryOptions) -> Result<Discovered, Scan
         // Prune ignored directories, but never prune the root itself.
         if e.file_type().is_dir() {
             match e.file_name().to_str() {
-                Some(name) => !is_ignored_dir(name),
+                Some(name) => !is_ignored_dir(name, opts.exclude_tests),
                 None => true,
             }
         } else {
@@ -193,6 +195,25 @@ mod tests {
         let opts = DiscoveryOptions {
             follow_symlinks: false,
             exclude: vec!["tests/**".to_string()],
+            exclude_tests: false,
+        };
+        let found = discover(&root, &opts).unwrap();
+        assert_eq!(found.rust_files.len(), 1);
+        assert!(found.rust_files[0].ends_with("lib.rs"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exclude_tests_prunes_test_directories() {
+        let root = tmpdir("exclude-tests");
+        write(&root.join("Cargo.toml"), "[package]\nname='a'\n");
+        write(&root.join("src/lib.rs"), "fn f() {}");
+        write(&root.join("tests/integration.rs"), "fn t() {}");
+        write(&root.join("crates/c/tests/helper.rs"), "fn h() {}");
+
+        let opts = DiscoveryOptions {
+            exclude_tests: true,
+            ..DiscoveryOptions::default()
         };
         let found = discover(&root, &opts).unwrap();
         assert_eq!(found.rust_files.len(), 1);
@@ -206,6 +227,7 @@ mod tests {
         let opts = DiscoveryOptions {
             follow_symlinks: false,
             exclude: vec!["[".to_string()],
+            exclude_tests: false,
         };
         assert!(matches!(discover(&root, &opts), Err(ScanError::Config(_))));
         let _ = std::fs::remove_dir_all(&root);

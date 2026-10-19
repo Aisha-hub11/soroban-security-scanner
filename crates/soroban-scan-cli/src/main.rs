@@ -44,6 +44,9 @@ min_confidence = "low"
 # Glob patterns (relative to the scan root) to exclude.
 exclude = []
 
+# Skip #[cfg(test)] items and test directories.
+exclude_tests = false
+
 # Follow symbolic links during discovery (disabled by default for safety).
 follow_symlinks = false
 
@@ -77,6 +80,7 @@ enum FormatArg {
     Json,
     Sarif,
     Markdown,
+    Github,
 }
 
 impl From<FormatArg> for OutputFormat {
@@ -86,6 +90,7 @@ impl From<FormatArg> for OutputFormat {
             FormatArg::Json => OutputFormat::Json,
             FormatArg::Sarif => OutputFormat::Sarif,
             FormatArg::Markdown => OutputFormat::Markdown,
+            FormatArg::Github => OutputFormat::Github,
         }
     }
 }
@@ -197,6 +202,10 @@ struct ScanArgs {
     /// Exclude a glob (relative to the scan root). Repeatable.
     #[arg(long = "exclude", value_name = "GLOB")]
     exclude: Vec<String>,
+
+    /// Skip items gated behind `#[cfg(test)]` and test directories.
+    #[arg(long)]
+    exclude_tests: bool,
 
     /// Configuration file to use.
     #[arg(long, value_name = "FILE")]
@@ -402,6 +411,7 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
         config.min_confidence = confidence;
     }
     config.exclude.extend(args.exclude.iter().cloned());
+    config.exclude_tests |= args.exclude_tests;
     config.rules.disabled.extend(args.disable.iter().cloned());
     config.rules.enabled.extend(args.rule.iter().cloned());
 
@@ -419,7 +429,8 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
             ));
         }
         let files = read_file_list(list, path)?;
-        let loaded = project::load_files(path, &files).map_err(runtime)?;
+        let loaded = project::load_files_with_options(path, &files, &config.discovery_options())
+            .map_err(runtime)?;
         engine::scan(&loaded, registry, &config)
     } else if multiple {
         let mut labels = Vec::with_capacity(args.paths.len());
@@ -827,7 +838,8 @@ fn scan_path(
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        let loaded = project::load_files(&root, &[file]).map_err(runtime)?;
+        let loaded = project::load_files_with_options(&root, &[file], &config.discovery_options())
+            .map_err(runtime)?;
         Ok(engine::scan(&loaded, registry, config))
     } else {
         engine::run_scan(path, config, registry).map_err(runtime)
@@ -1009,7 +1021,12 @@ mod tests {
 
     #[test]
     fn machine_formats_are_never_paged() {
-        for format in [FormatArg::Json, FormatArg::Sarif, FormatArg::Markdown] {
+        for format in [
+            FormatArg::Json,
+            FormatArg::Sarif,
+            FormatArg::Markdown,
+            FormatArg::Github,
+        ] {
             assert!(!should_page(PagerArg::Always, format, true, 1_000_000, 1));
         }
     }

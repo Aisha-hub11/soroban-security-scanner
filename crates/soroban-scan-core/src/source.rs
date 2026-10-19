@@ -704,6 +704,19 @@ pub fn max_delimiter_depth(src: &str) -> usize {
 
 /// Parses a single source file's content.
 pub fn parse_source(path: &Path, crate_root: &Path, content: &str) -> ParsedSource {
+    parse_source_with_options(path, crate_root, content, false)
+}
+
+/// Parses a single source file's content with discovery options.
+///
+/// When `exclude_tests` is set, items gated behind `#[cfg(test)]` are removed
+/// before analysis so detectors never see test-only code.
+pub fn parse_source_with_options(
+    path: &Path,
+    crate_root: &Path,
+    content: &str,
+    exclude_tests: bool,
+) -> ParsedSource {
     let module_path = module_path_for(path, crate_root);
 
     if max_delimiter_depth(content) > MAX_NESTING_DEPTH {
@@ -722,7 +735,10 @@ pub fn parse_source(path: &Path, crate_root: &Path, content: &str) -> ParsedSour
     }
 
     match syn::parse_file(content) {
-        Ok(file) => {
+        Ok(mut file) => {
+            if exclude_tests {
+                prune_cfg_test_items(&mut file.items);
+            }
             let mut items = Vec::new();
             let mut functions = Vec::new();
             let mut contract_definitions = Vec::new();
@@ -757,6 +773,84 @@ pub fn parse_source(path: &Path, crate_root: &Path, content: &str) -> ParsedSour
             contract_definitions: Vec::new(),
             suppressions: Vec::new(),
         },
+    }
+}
+
+/// Returns true if any attribute is a positive `cfg(test)` gate.
+///
+/// `cfg(not(test))` is deliberately treated as non-test code, and
+/// `cfg(feature = "test")` is not the built-in `test` cfg and is ignored.
+fn attrs_gated_by_test(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| attribute_path(attr) == "cfg" && cfg_meta_mentions_test(&attr.meta))
+}
+
+fn cfg_meta_mentions_test(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            let name = list
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+                .unwrap_or_default();
+            if name == "not" {
+                return false;
+            }
+            list.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .map(|metas| metas.iter().any(cfg_meta_mentions_test))
+            .unwrap_or(false)
+        }
+        syn::Meta::NameValue(_) => false,
+    }
+}
+
+fn item_attrs_slice(item: &syn::Item) -> &[syn::Attribute] {
+    use syn::Item;
+    match item {
+        Item::Const(i) => &i.attrs,
+        Item::Enum(i) => &i.attrs,
+        Item::ExternCrate(i) => &i.attrs,
+        Item::Fn(i) => &i.attrs,
+        Item::ForeignMod(i) => &i.attrs,
+        Item::Impl(i) => &i.attrs,
+        Item::Macro(i) => &i.attrs,
+        Item::Mod(i) => &i.attrs,
+        Item::Static(i) => &i.attrs,
+        Item::Struct(i) => &i.attrs,
+        Item::Trait(i) => &i.attrs,
+        Item::TraitAlias(i) => &i.attrs,
+        Item::Type(i) => &i.attrs,
+        Item::Union(i) => &i.attrs,
+        Item::Use(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+/// Removes items gated behind `#[cfg(test)]`, recursing into modules and impls.
+fn prune_cfg_test_items(items: &mut Vec<syn::Item>) {
+    items.retain(|item| !attrs_gated_by_test(item_attrs_slice(item)));
+    for item in items.iter_mut() {
+        match item {
+            syn::Item::Mod(module) => {
+                if let Some((_, sub_items)) = &mut module.content {
+                    prune_cfg_test_items(sub_items);
+                }
+            }
+            syn::Item::Impl(imp) => imp.items.retain(|impl_item| match impl_item {
+                syn::ImplItem::Fn(function) => !attrs_gated_by_test(&function.attrs),
+                _ => true,
+            }),
+            syn::Item::Trait(tr) => tr.items.retain(|trait_item| match trait_item {
+                syn::TraitItem::Fn(function) => !attrs_gated_by_test(&function.attrs),
+                _ => true,
+            }),
+            _ => {}
+        }
     }
 }
 
@@ -818,6 +912,7 @@ pub fn load_sources(
     files: &[PathBuf],
     manifests: &[crate::model::Manifest],
     root: &Path,
+    exclude_tests: bool,
 ) -> (Vec<ParsedSource>, Vec<Diagnostic>) {
     let crate_roots: Vec<PathBuf> = manifests
         .iter()
@@ -865,7 +960,7 @@ pub fn load_sources(
 
         let crate_root =
             nearest_crate_root(path, &crate_roots).unwrap_or_else(|| root.to_path_buf());
-        let source = parse_source(path, &crate_root, &content);
+        let source = parse_source_with_options(path, &crate_root, &content, exclude_tests);
         if let Some(err) = &source.parse_error {
             diagnostics.push(Diagnostic::warning(
                 DiagnosticCode::ParseFailed,
@@ -968,6 +1063,42 @@ impl C {
         assert_eq!(entry[0].params.len(), 2);
         assert_eq!(entry[0].params[1].name, "amount");
         assert_eq!(entry[0].in_impl.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn excludes_cfg_test_items_only_when_requested() {
+        let src = r#"
+#[contractimpl]
+impl C {
+    pub fn real(env: Env) {}
+
+    #[cfg(test)]
+    pub fn test_helper(env: Env) {}
+}
+
+#[cfg(test)]
+mod tests {
+    #[contractimpl]
+    impl C {
+        pub fn test_only(env: Env) {}
+    }
+}
+
+#[cfg(not(test))]
+fn available_in_production() {}
+"#;
+        let kept = parse_source_with_options(Path::new("src/lib.rs"), Path::new("."), src, false);
+        let kept_names: Vec<_> = kept.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(kept_names.contains(&"test_helper"));
+        assert!(kept_names.contains(&"test_only"));
+        assert!(kept_names.contains(&"available_in_production"));
+
+        let pruned = parse_source_with_options(Path::new("src/lib.rs"), Path::new("."), src, true);
+        let pruned_names: Vec<_> = pruned.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(pruned_names.contains(&"real"));
+        assert!(!pruned_names.contains(&"test_helper"));
+        assert!(!pruned_names.contains(&"test_only"));
+        assert!(pruned_names.contains(&"available_in_production"));
     }
 
     #[test]

@@ -89,6 +89,8 @@ pub struct ScanConfig {
     pub min_confidence: Confidence,
     /// Glob patterns (relative to the scan root) to exclude from discovery.
     pub exclude: Vec<String>,
+    /// Skip items gated behind `#[cfg(test)]` and test directories.
+    pub exclude_tests: bool,
     /// Whether to follow symbolic links during discovery.
     pub follow_symlinks: bool,
     /// Rule selection and overrides.
@@ -103,6 +105,7 @@ impl Default for ScanConfig {
             min_severity: Severity::Info,
             min_confidence: Confidence::Low,
             exclude: Vec::new(),
+            exclude_tests: false,
             follow_symlinks: false,
             rules: RulesConfig::default(),
             ai: AiConfig::default(),
@@ -116,6 +119,7 @@ impl ScanConfig {
         crate::discovery::DiscoveryOptions {
             follow_symlinks: self.follow_symlinks,
             exclude: self.exclude.clone(),
+            exclude_tests: self.exclude_tests,
         }
     }
 

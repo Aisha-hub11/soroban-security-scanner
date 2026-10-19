@@ -59,10 +59,13 @@ jobs:
       - name: Annotate high and critical findings
         if: steps.changed.outputs.count != '0'
         run: |
-          jq -r '.findings[]
-            | select(.severity == "high" or .severity == "critical")
-            | "::error file=\(.location.file),line=\(.location.line)::\(.rule_id): \(.title)"' \
-            results.json
+          ./target/release/soroban-scan scan . \
+            --files-from changed.txt \
+            --exclude 'fixtures/**' \
+            --exclude 'examples/**' \
+            --format github \
+            --min-severity high \
+            --fail-on none
 
       - name: Produce SARIF
         if: steps.changed.outputs.count != '0'

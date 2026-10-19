@@ -331,6 +331,32 @@ fn scan_json_includes_diagnostic_codes_and_levels() {
 }
 
 #[test]
+fn scan_github_output_emits_workflow_annotations() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "github",
+        "--min-severity",
+        "high",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let lines: Vec<_> = out.stdout.lines().collect();
+    assert!(!lines.is_empty(), "expected at least one annotation");
+    for line in lines {
+        assert!(
+            line.starts_with("::error file=") || line.starts_with("::warning "),
+            "unexpected annotation: {line}"
+        );
+        assert!(line.contains("line="), "missing line property: {line}");
+        assert!(line.contains("title=SS-001"), "missing title: {line}");
+        assert!(line.contains("::SS-001:"), "missing message: {line}");
+    }
+}
+
+#[test]
 fn scan_sarif_output_is_valid() {
     let out = run(&[
         "scan",
@@ -752,6 +778,102 @@ fn config_validate_rejects_unknown_category() {
         "stderr: {}",
         out.stderr
     );
+}
+
+#[test]
+fn exclude_tests_skips_cfg_test_items_and_test_directories() {
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-tests-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("tests")).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"tests-demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nsoroban-sdk = \"21.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        r#"
+#[contractimpl]
+impl C {
+    pub fn vulnerable(env: Env) {
+        env.storage().persistent().set(&Key::V, &1);
+    }
+
+    #[cfg(test)]
+    pub fn test_only(env: Env) {
+        env.storage().persistent().set(&Key::T, &1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[contractimpl]
+    impl C {
+        pub fn nested_test(env: Env) {
+            env.storage().persistent().set(&Key::N, &1);
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tests/integration.rs"),
+        r#"
+#[contractimpl]
+impl T {
+    pub fn integration(env: Env) {
+        env.storage().persistent().set(&Key::I, &1);
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let plain = run(&[
+        "scan",
+        dir.to_str().unwrap(),
+        "--rule",
+        "SS-001",
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(plain.code, 0, "stderr: {}", plain.stderr);
+    let value: serde_json::Value = serde_json::from_str(&plain.stdout).unwrap();
+    assert_eq!(
+        rule_ids(&value["findings"]).len(),
+        4,
+        "test-only code must be scanned by default: {}",
+        plain.stdout
+    );
+
+    let excluded = run(&[
+        "scan",
+        dir.to_str().unwrap(),
+        "--rule",
+        "SS-001",
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+        "--exclude-tests",
+    ]);
+    assert_eq!(excluded.code, 0, "stderr: {}", excluded.stderr);
+    let value: serde_json::Value = serde_json::from_str(&excluded.stdout).unwrap();
+    let findings = value["findings"].as_array().unwrap();
+    assert_eq!(
+        findings.len(),
+        1,
+        "only the non-test finding may remain: {}",
+        excluded.stdout
+    );
+    assert!(findings[0]["location"]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with("src/lib.rs"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

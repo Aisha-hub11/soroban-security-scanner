@@ -39,6 +39,8 @@ pub enum OutputFormat {
     Sarif,
     /// Markdown report.
     Markdown,
+    /// GitHub Actions workflow-command annotations.
+    Github,
 }
 
 impl OutputFormat {
@@ -49,6 +51,7 @@ impl OutputFormat {
             "json" => Ok(OutputFormat::Json),
             "sarif" => Ok(OutputFormat::Sarif),
             "markdown" | "md" => Ok(OutputFormat::Markdown),
+            "github" => Ok(OutputFormat::Github),
             other => Err(format!("unknown output format: {other}")),
         }
     }
@@ -60,6 +63,7 @@ impl OutputFormat {
             OutputFormat::Json => "json",
             OutputFormat::Sarif => "sarif",
             OutputFormat::Markdown => "markdown",
+            OutputFormat::Github => "github",
         }
     }
 }
@@ -72,6 +76,7 @@ pub fn render(outcome: &ScanOutcome, registry: &RuleRegistry, format: OutputForm
             .unwrap_or_else(|e| format!("{{\"error\":\"failed to serialize report: {e}\"}}")),
         OutputFormat::Sarif => render_sarif(outcome, registry),
         OutputFormat::Markdown => render_markdown(outcome),
+        OutputFormat::Github => render_github(outcome),
     }
 }
 
@@ -327,6 +332,82 @@ fn sarif_level(severity: Severity) -> &'static str {
         Severity::Medium => "warning",
         Severity::Low | Severity::Info => "note",
     }
+}
+
+/// Maps a finding severity onto a GitHub workflow-command level.
+fn github_level(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Critical | Severity::High => "error",
+        Severity::Medium => "warning",
+        Severity::Low | Severity::Info => "notice",
+    }
+}
+
+/// Escapes a value for the message portion of a GitHub workflow command.
+///
+/// See the workflow-command escaping rules: `%`, carriage returns, and newlines
+/// must be percent-encoded so scanned source can never inject a new command.
+fn escape_github_data(value: &str) -> String {
+    value
+        .replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+}
+
+/// Escapes a value for the property portion of a GitHub workflow command.
+///
+/// Properties additionally require `:` and `,` to be escaped.
+fn escape_github_property(value: &str) -> String {
+    escape_github_data(value)
+        .replace(':', "%3A")
+        .replace(',', "%2C")
+}
+
+/// Renders one GitHub Actions annotation line for a finding.
+fn github_annotation(finding: &Finding) -> String {
+    let file = finding.location.file.to_string_lossy().replace('\\', "/");
+    let mut properties = format!(
+        "file={},line={}",
+        escape_github_property(&file),
+        finding.location.line
+    );
+    if let Some(column) = finding.location.column {
+        properties.push_str(&format!(",col={column}"));
+    }
+    if let Some(end_line) = finding.location.end_line {
+        properties.push_str(&format!(",endLine={end_line}"));
+    }
+    if let Some(end_column) = finding.location.end_column {
+        properties.push_str(&format!(",endColumn={end_column}"));
+    }
+    properties.push_str(&format!(
+        ",title={}",
+        escape_github_property(&format!("{}: {}", finding.rule_id, finding.title))
+    ));
+
+    let message = escape_github_data(&format!(
+        "{}: {} — {}",
+        finding.rule_id, finding.title, finding.evidence
+    ));
+    format!(
+        "::{} {}::{}",
+        github_level(finding.severity),
+        properties,
+        message
+    )
+}
+
+/// Renders GitHub Actions workflow-command annotations, one per finding.
+///
+/// Only active findings are annotated; findings suppressed by an inline
+/// directive stay visible in the other formats but do not fail the gate.
+pub fn render_github(outcome: &ScanOutcome) -> String {
+    let mut out = String::new();
+    for finding in &outcome.findings {
+        out.push_str(&github_annotation(finding));
+        out.push('\n');
+    }
+    out
 }
 
 /// Builds one SARIF result.
@@ -780,7 +861,32 @@ mod tests {
     fn output_format_parsing() {
         assert_eq!(OutputFormat::parse("SARIF").unwrap(), OutputFormat::Sarif);
         assert_eq!(OutputFormat::parse("md").unwrap(), OutputFormat::Markdown);
+        assert_eq!(OutputFormat::parse("github").unwrap(), OutputFormat::Github);
+        assert_eq!(OutputFormat::Github.as_str(), "github");
         assert!(OutputFormat::parse("xml").is_err());
+    }
+
+    #[test]
+    fn github_annotations_use_severity_levels_and_locations() {
+        let (outcome, _) = sample();
+        let text = render_github(&outcome);
+        assert!(text.contains("::error file="), "got: {text}");
+        assert!(text.contains("line="), "got: {text}");
+        assert!(text.contains("title=SS-001"), "got: {text}");
+        assert!(text.contains("SS-001:"), "got: {text}");
+        assert_eq!(text.lines().count(), outcome.findings.len());
+    }
+
+    #[test]
+    fn github_workflow_commands_escape_untrusted_text() {
+        assert_eq!(escape_github_data("100%\r\nnext"), "100%25%0D%0Anext");
+        assert_eq!(escape_github_property("src/a:b,c.rs"), "src/a%3Ab%2Cc.rs");
+        // Severity determines the workflow-command level.
+        assert_eq!(github_level(Severity::Critical), "error");
+        assert_eq!(github_level(Severity::High), "error");
+        assert_eq!(github_level(Severity::Medium), "warning");
+        assert_eq!(github_level(Severity::Low), "notice");
+        assert_eq!(github_level(Severity::Info), "notice");
     }
     struct FixedLineRule {
         meta: crate::rule::RuleMetadata,

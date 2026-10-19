@@ -173,12 +173,22 @@ that would escape the scan root.
 
 ## PR annotations
 
-`pr-scan.yml` emits workflow annotations for `high` and `critical` findings using
-`::error` commands, independent of code scanning:
+Use `--format github` to emit workflow annotations without a `jq` post-processing
+step. `pr-scan.yml` runs it with `--min-severity high`, so high and critical
+findings become `::error` annotations independent of code scanning:
 
+```bash
+soroban-scan scan . --files-from changed.txt \
+  --format github --min-severity high --fail-on none
 ```
-::error file=src/lib.rs,line=42::SS-001: State-changing entry point without caller authorization
+
+```text
+::error file=src/lib.rs,line=42,col=9,title=SS-001: State-changing entry point without caller authorization::SS-001: State-changing entry point without caller authorization — ...
 ```
+
+The renderer escapes `%`, newlines, carriage returns, `:`, and `,` in
+user-controlled values, preventing workflow-command injection from scanned source
+paths or titles.
 
 ## Opt-in PR comments
 
