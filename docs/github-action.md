@@ -104,10 +104,15 @@ jobs:
 - `contents: read` — required to check out and read the repository.
 - `security-events: write` — required only if you upload SARIF to GitHub code
   scanning.
+- `pull-requests: write` — required only for the bundled workflow's opt-in
+  sticky PR comment.
+- `checks: write` — required only for the bundled workflow's opt-in check run
+  with inline annotations.
 
 The action makes no network requests beyond building the workflow's own
 dependencies; see [GitHub Integration](github-integration.md) for the fork
-pull-request safety model.
+pull-request safety model, sticky comments, check runs, and baseline refresh
+automation.
 
 ## Versioning
 

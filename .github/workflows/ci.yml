@@ -65,6 +65,48 @@ jobs:
           python-version: "3.x"
       - run: python tools/check_docs.py
 
+  sdk-matrix:
+    name: Soroban SDK ${{ matrix.sdk }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: "20.5.0"
+            fixture: fixtures/sdk-matrix/soroban-sdk-20
+          - sdk: "21.7.7"
+            fixture: fixtures/sdk-matrix/soroban-sdk-21
+          - sdk: "29.0.1"
+            fixture: fixtures/sdk-matrix/soroban-sdk-29
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build scanner
+        run: cargo build --release -p soroban-scan-cli
+      - name: Scan the pinned fixture
+        env:
+          FIXTURE: ${{ matrix.fixture }}
+        run: |
+          ./target/release/soroban-scan scan "${FIXTURE}" \
+            --format json \
+            --output "sdk-${{ matrix.sdk }}.json" \
+            --fail-on none
+          python3 tools/check_sdk_matrix.py \
+            "sdk-${{ matrix.sdk }}.json" \
+            --sdk "${{ matrix.sdk }}"
+
+  python:
+    name: Python helper tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
   deny:
     name: Dependency audit
     runs-on: ubuntu-latest

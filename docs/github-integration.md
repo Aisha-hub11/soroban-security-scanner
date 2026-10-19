@@ -11,6 +11,7 @@ and never post or create anything unless explicitly enabled.
 | Read repository contents | `contents: read` | Always required. |
 | Upload SARIF | `security-events: write` | Required for code scanning. Not available to fork PRs. |
 | Comment on a PR | `pull-requests: write` | Only when opt-in commenting is enabled. |
+| Create a check run | `checks: write` | Only when opt-in check runs are enabled. Not available to fork PRs. |
 | Create issues | `issues: write` | Only for explicitly enabled issue creation; not enabled by default. |
 
 The scanner itself needs no token and makes no network requests.
@@ -190,6 +191,10 @@ The renderer escapes `%`, newlines, carriage returns, `:`, and `,` in
 user-controlled values, preventing workflow-command injection from scanned source
 paths or titles.
 
+Workflow commands are simple but unstructured. The opt-in check run described
+below adds severity levels, remediation details, and an explicit pass/fail
+conclusion through the Checks API.
+
 ## Opt-in PR comments
 
 Commenting is **disabled by default** to avoid noise. Enable it by setting the
@@ -199,8 +204,57 @@ repository variable `SOROBAN_SCAN_PR_COMMENT` to `true`:
 gh variable set SOROBAN_SCAN_PR_COMMENT --body true
 ```
 
-When enabled, the workflow posts a single summary comment per run. It never runs
-for fork pull requests.
+When enabled, the workflow maintains **one sticky summary comment per pull
+request**. Each run looks for a hidden marker
+(`<!-- soroban-scan:sticky-comment -->`) in existing comments, edits the first
+match, and creates a comment only when none exists. Duplicate marked comments
+left by older runs are deleted, so a PR never accumulates scanner comments as it
+is pushed to. It never runs for fork pull requests.
+
+The logic lives in
+[`.github/scripts/pr_comment.py`](../.github/scripts/pr_comment.py) and uses
+`gh api` with pagination. The script never prints or persists the workflow
+token.
+
+## Check runs with inline annotations
+
+The Checks API can attach structured annotations (with `failure`, `warning`, and
+`notice` levels) and a pass/fail conclusion to a commit. This is optional and
+disabled by default. Enable it with the repository variable
+`SOROBAN_SCAN_CHECK_RUN`:
+
+```bash
+gh variable set SOROBAN_SCAN_CHECK_RUN --body true
+```
+
+The workflow then runs
+[`.github/scripts/check_run.py`](../.github/scripts/check_run.py), which:
+
+- Reads the `--format json` report produced by the changed-file scan.
+- Creates a completed check run named **Soroban Security Scan** at the pull
+  request's head SHA.
+- Maps `critical` and `high` findings to `failure` annotations, `medium` to
+  `warning`, and `low`/`info` to `notice`.
+- Sets the check conclusion to `failure` when a finding meets the configured
+  threshold (default `high`), and `success` otherwise.
+- Caps annotations at GitHub's limit of 50 per request and notes any omitted
+  findings in the summary; the JSON report remains complete.
+
+Override the threshold with the `SOROBAN_SCAN_CHECK_RUN_FAIL_ON` repository
+variable (`none`, `info`, `low`, `medium`, `high`, or `critical`).
+
+Required permissions:
+
+```yaml
+permissions:
+  contents: read
+  checks: write
+```
+
+Fork pull requests receive a read-only token and cannot create checks. The
+workflow guards the step with
+`github.event.pull_request.head.repo.full_name == github.repository`, so fork
+PRs are skipped entirely.
 
 ## Baseline synchronization
 
@@ -215,6 +269,27 @@ Store a baseline in the repository and pass it to the action:
 Refresh it deliberately with `soroban-scan scan . --write-baseline …` and review
 the change in code review, just like any other file. See
 [`baselines.md`](baselines.md).
+
+### Scheduled baseline refresh
+
+[`baseline-refresh.yml`](../.github/workflows/baseline-refresh.yml) runs weekly
+(and on manual dispatch), regenerates the committed baseline, and opens or
+updates a pull request on the `automation/baseline-refresh` branch. It never
+pushes to `main` and never auto-merges, so a maintainer must review the baseline
+diff before it is accepted.
+
+By default it scans the repository root while excluding `fixtures/**` and
+`examples/**` (which intentionally contain vulnerable code) and writes
+`.soroban-scan-baseline.json`. Override the target with repository variables:
+
+```bash
+gh variable set SOROBAN_SCAN_BASELINE_SCAN_PATH --body ./contracts
+gh variable set SOROBAN_SCAN_BASELINE_FILE --body .soroban-scan-baseline.json
+```
+
+The workflow uses `GITHUB_TOKEN`, so pull requests it creates do not trigger
+other workflows. Configure a separate automation token only if your repository
+requires those checks to run on automation PRs.
 
 ## Issue creation (opt-in)
 
@@ -255,3 +330,23 @@ Guidance:
 - No secrets are read or emitted.
 - No repository content is modified.
 - No issues, comments, or check runs are created unless explicitly enabled.
+- Sticky comments and check runs never run for fork pull requests, and never
+  include secrets.
+
+## Verifying the integrations
+
+Use a throwaway pull request in a fork or test repository:
+
+1. **Sticky comment:** enable `SOROBAN_SCAN_PR_COMMENT`, push once, then push
+   again. The comment ID and update timestamp change, but the number of marked
+   comments stays at one.
+2. **Check run:** enable `SOROBAN_SCAN_CHECK_RUN`. Confirm the **Soroban
+   Security Scan** check appears on the pull request head SHA with structured
+   annotations and a conclusion that matches the findings. Pushing a fix should
+   produce a later check run with a `success` conclusion.
+3. **Baseline refresh:** run the `Baseline Refresh` workflow with
+   `workflow_dispatch`. Confirm it opens or updates a pull request on
+   `automation/baseline-refresh`; running it again with no baseline drift should
+   leave the branch unchanged.
+
+Fork pull requests should show none of these side effects.

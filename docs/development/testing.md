@@ -19,6 +19,13 @@ worse than no tooling, because it creates false confidence.
 cargo test --all
 ```
 
+Python-only CI helpers (the GitHub comment and check-run scripts) have their own
+standard-library test suite:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 Run a single test:
 
 ```bash

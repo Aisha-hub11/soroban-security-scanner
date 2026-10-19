@@ -6,6 +6,7 @@ out-of-band automation such as:
 
 - Generating and validating the contributor backlog.
 - Maintaining the security fixture corpus.
+- Validating the pinned Soroban SDK compatibility matrix.
 - Release and changelog automation.
 
 ## Requirements

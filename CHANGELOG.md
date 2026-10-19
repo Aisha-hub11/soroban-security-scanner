@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GitHub pull-request integration now maintains a single sticky scanner comment.
+  A hidden HTML marker identifies the comment, so later pushes update it in place
+  instead of adding another comment; duplicate marked comments are removed.
+  Commenting remains opt-in and is skipped for fork PRs.
+- Optional GitHub check run with structured inline annotations from the JSON
+  report (`failure`/`warning`/`notice` levels), a pass/fail conclusion, and a
+  50-annotation cap. The check run is opt-in, documented, and skipped for fork
+  PRs.
+- Scheduled baseline refresh workflow that regenerates the committed baseline
+  and opens a reviewable pull request. It never pushes to `main` or auto-merges.
+- CI matrix over pinned Soroban SDK fixtures (20.5.0, 21.7.7, and 29.0.1), with
+  fixture projects, an offline report checker, and updated compatibility
+  documentation.
 - `--no-config` for `scan`: skip configuration discovery and run with the
   built-in defaults. Useful when debugging, or when scanning an untrusted
   repository that ships its own `soroban-scan.toml`. Mutually exclusive with
