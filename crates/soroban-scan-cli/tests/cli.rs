@@ -60,12 +60,21 @@ fn run_with_stdin(args: &[&str], input: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn soroban-scan");
-    child
+    if let Err(error) = child
         .stdin
         .take()
         .expect("stdin was piped")
         .write_all(input.as_bytes())
-        .expect("failed to write to stdin");
+    {
+        // Argument validation can reject the invocation before stdin is read.
+        // The child then exits and closes the pipe; that is the behavior under
+        // test, not a harness failure.
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "failed to write to stdin: {error}"
+        );
+    }
     let result = child.wait_with_output().expect("failed to read output");
     Output {
         stdout: String::from_utf8_lossy(&result.stdout).to_string(),
