@@ -99,6 +99,11 @@ Rule identifiers are stable (never reused or renumbered). See
   `--new-only`, `--incremental`).
 - GitHub Actions security-scan workflow with SARIF upload.
 - Composite GitHub Action and changed-file pull-request scanning.
+- Opt-in sticky PR comments (one updated comment per PR) and check runs with
+  structured inline annotations.
+- Scheduled baseline refresh workflow that opens a reviewable pull request.
+- CI compatibility matrix over pinned Soroban SDK 20.5.0, 21.7.7, and 29.0.1
+  fixtures.
 - Optional, clearly labeled assistance (`--guidance`); off by default and never
   authoritative.
 - A compilable example suite: clean and intentionally vulnerable Soroban

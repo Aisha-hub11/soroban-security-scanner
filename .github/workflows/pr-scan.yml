@@ -19,6 +19,7 @@ jobs:
       contents: read
       security-events: write
       pull-requests: write
+      checks: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -88,10 +89,15 @@ jobs:
 
       # Opt-in PR comment. Enable by setting the repository variable
       # SOROBAN_SCAN_PR_COMMENT to "true". Never runs for forks.
+      #
+      # The body is generated locally, then pr_comment.py updates a single
+      # "sticky" comment identified by a hidden marker. Re-runs on later pushes
+      # therefore edit the existing comment instead of adding another one.
       - name: Comment summary on PR
         if: steps.changed.outputs.count != '0' && vars.SOROBAN_SCAN_PR_COMMENT == 'true' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           total=$(jq '.findings | length' results.json)
           {
@@ -102,5 +108,25 @@ jobs:
             echo "Findings: ${total}"
             echo ""
             jq -r '.findings[] | "- `\(.rule_id)` **\(.severity)** `\(.location.file):\(.location.line)` — \(.title)"' results.json | head -50
+            echo ""
+            echo "_Updated automatically on every push. See [GitHub Integration](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/github-integration.md#opt-in-pr-comments)._"
           } > comment.md
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
+          python3 .github/scripts/pr_comment.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pr "${{ github.event.pull_request.number }}" \
+            --body-file comment.md
+
+      # Opt-in structured check run with inline annotations. Enable by setting
+      # the repository variable SOROBAN_SCAN_CHECK_RUN to "true". Fork PRs get a
+      # read-only token, so they cannot create checks; the guard skips them.
+      - name: Create check run with annotations
+        if: steps.changed.outputs.count != '0' && vars.SOROBAN_SCAN_CHECK_RUN == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 .github/scripts/check_run.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --report results.json \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --fail-on "${{ vars.SOROBAN_SCAN_CHECK_RUN_FAIL_ON || 'high' }}"

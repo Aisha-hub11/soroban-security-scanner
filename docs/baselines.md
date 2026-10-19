@@ -87,3 +87,22 @@ rejected.
    ```
 
 4. Review baseline changes in code review, just like any other file.
+
+## Scheduled refresh
+
+This repository ships
+[`.github/workflows/baseline-refresh.yml`](../.github/workflows/baseline-refresh.yml).
+It runs weekly and on manual dispatch, regenerates the baseline, and opens (or
+updates) a pull request on the `automation/baseline-refresh` branch. It never
+pushes to `main` and never auto-merges; the baseline diff is the review artifact.
+
+Defaults:
+
+- Scan path: the repository root, excluding `fixtures/**` and `examples/**`
+  because those intentionally contain vulnerable code.
+- Baseline: `.soroban-scan-baseline.json`.
+
+Set the repository variables `SOROBAN_SCAN_BASELINE_SCAN_PATH` and
+`SOROBAN_SCAN_BASELINE_FILE` to point the workflow at a contract tree and
+baseline file of your choosing. See
+[GitHub Integration](github-integration.md#scheduled-baseline-refresh).

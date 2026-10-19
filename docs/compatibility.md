@@ -27,7 +27,37 @@
   storage and authorization APIs (`env.storage().persistent()/instance()/temporary()`,
   `Address::require_auth`, generated `*Client` constructors). These correspond to
   SDK v20 and later.
-- **Verified against fixtures using** `soroban-sdk = "21.0.0"`.
+- **Verified against fixtures pinned to** `soroban-sdk = "20.5.0"`,
+  `"21.7.7"`, and `"29.0.1"` under `fixtures/sdk-matrix/`.
+
+### SDK compatibility matrix
+
+The CI `sdk-matrix` job scans the pinned fixture for each version and asserts
+that:
+
+- the fixture is classified as `confirmed_soroban`;
+- the pinned version is detected in `project.soroban_sdk_versions`; and
+- the SS-001 (missing authorization) and SS-008 (unchecked arithmetic) findings
+  are still reported.
+
+| SDK version | Fixture | Status |
+| ----------- | ------- | ------ |
+| 20.5.0 (oldest supported line) | `fixtures/sdk-matrix/soroban-sdk-20` | Verified |
+| 21.7.7 (last v21 release) | `fixtures/sdk-matrix/soroban-sdk-21` | Verified |
+| 29.0.1 (current release) | `fixtures/sdk-matrix/soroban-sdk-29` | Verified |
+
+The matrix exercises scanner behavior, not contract compilation. The shared
+fixture source deliberately sticks to APIs stable across these releases, so a
+failure indicates detector or project-detection drift rather than an SDK build
+problem. Run the same check locally after building the scanner:
+
+```bash
+soroban-scan scan fixtures/sdk-matrix/soroban-sdk-21 \
+  --format json \
+  --output sdk-21.json \
+  --fail-on none
+python tools/check_sdk_matrix.py sdk-21.json --sdk 21.7.7
+```
 
 ## Machine-readable formats
 
