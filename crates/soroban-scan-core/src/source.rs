@@ -81,6 +81,40 @@ pub struct ParamSummary {
     pub ty: String,
 }
 
+/// Declared visibility of a function.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Visibility {
+    /// Declared `pub`, visible outside the crate.
+    Public,
+    /// Declared `pub(crate)`, visible within the crate.
+    Crate,
+    /// Declared `pub(super)`, visible to the parent module.
+    Super,
+    /// Declared `pub(self)`, visible to the current module.
+    Self_,
+    /// No visibility modifier (private to the module).
+    #[default]
+    Inherited,
+}
+
+impl Visibility {
+    /// Whether this is true `pub` visibility.
+    pub fn is_public(self) -> bool {
+        self == Visibility::Public
+    }
+
+    /// Stable lowercase label.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Visibility::Public => "public",
+            Visibility::Crate => "crate",
+            Visibility::Super => "super",
+            Visibility::Self_ => "self",
+            Visibility::Inherited => "inherited",
+        }
+    }
+}
+
 /// Summary of a function definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSummary {
@@ -94,8 +128,8 @@ pub struct FunctionSummary {
     pub column: usize,
     /// 1-based end line of the function.
     pub end_line: usize,
-    /// Whether the function is declared `pub`.
-    pub is_public: bool,
+    /// Declared visibility.
+    pub visibility: Visibility,
     /// Whether the function is `async`.
     pub is_async: bool,
     /// Attribute path strings on the function.
@@ -182,6 +216,28 @@ fn vis_is_public(vis: &syn::Visibility) -> bool {
     matches!(vis, syn::Visibility::Public(_))
 }
 
+/// Maps a `syn` visibility onto the scanner's visibility enum.
+///
+/// Other restricted forms such as `pub(in path)` are treated as crate-visible
+/// for entry-point purposes: only true `pub` is exported.
+fn visibility_of(vis: &syn::Visibility) -> Visibility {
+    match vis {
+        syn::Visibility::Public(_) => Visibility::Public,
+        syn::Visibility::Restricted(restricted) => {
+            if restricted.path.is_ident("crate") {
+                Visibility::Crate
+            } else if restricted.path.is_ident("super") {
+                Visibility::Super
+            } else if restricted.path.is_ident("self") {
+                Visibility::Self_
+            } else {
+                Visibility::Crate
+            }
+        }
+        syn::Visibility::Inherited => Visibility::Inherited,
+    }
+}
+
 fn span_start<T: Spanned>(node: &T) -> (usize, usize) {
     let start = node.span().start();
     (start.line, start.column + 1)
@@ -245,7 +301,7 @@ struct ImplContext {
 fn make_function(
     sig: &syn::Signature,
     attrs: &[syn::Attribute],
-    vis_public: bool,
+    visibility: Visibility,
     prefix: &str,
     impl_ctx: Option<&ImplContext>,
 ) -> FunctionSummary {
@@ -257,7 +313,7 @@ fn make_function(
         None => format!("{prefix}::{name}"),
     };
     let impl_attributes = impl_ctx.map(|c| c.attributes.clone()).unwrap_or_default();
-    let is_contract_entry_point = vis_public
+    let is_contract_entry_point = visibility.is_public()
         && impl_attributes.iter().any(|a| {
             matches!(
                 soroban::contract_attribute_strength(a),
@@ -271,7 +327,7 @@ fn make_function(
         line,
         column,
         end_line: span_end_line(sig),
-        is_public: vis_public,
+        visibility,
         is_async: sig.asyncness.is_some(),
         attributes: attribute_paths(attrs),
         params: params_of(sig),
@@ -310,7 +366,7 @@ fn walk_items(
                 out_functions.push(make_function(
                     &f.sig,
                     &attrs,
-                    vis_is_public(&f.vis),
+                    visibility_of(&f.vis),
                     prefix,
                     impl_ctx,
                 ));
@@ -343,7 +399,7 @@ fn walk_items(
                         out_functions.push(make_function(
                             &f.sig,
                             &f_attrs,
-                            vis_is_public(&f.vis),
+                            visibility_of(&f.vis),
                             prefix,
                             Some(&ctx),
                         ));
@@ -369,7 +425,7 @@ fn walk_items(
                         out_functions.push(make_function(
                             &f.sig,
                             &f_attrs,
-                            false,
+                            Visibility::Inherited,
                             prefix,
                             Some(&ctx),
                         ));
@@ -1063,6 +1119,42 @@ impl C {
         assert_eq!(entry[0].params.len(), 2);
         assert_eq!(entry[0].params[1].name, "amount");
         assert_eq!(entry[0].in_impl.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn distinguishes_every_function_visibility() {
+        let src = r#"
+use soroban_sdk::{contract, contractimpl};
+
+#[contract]
+pub struct C;
+
+#[contractimpl]
+impl C {
+    pub fn public_fn() {}
+    pub(crate) fn crate_fn() {}
+    pub(super) fn super_fn() {}
+    pub(self) fn self_fn() {}
+    fn private_fn() {}
+}
+"#;
+        let s = parse(src);
+        let visibility = |name: &str| {
+            s.functions
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap()
+                .visibility
+        };
+
+        assert_eq!(visibility("public_fn"), Visibility::Public);
+        assert_eq!(visibility("crate_fn"), Visibility::Crate);
+        assert_eq!(visibility("super_fn"), Visibility::Super);
+        assert_eq!(visibility("self_fn"), Visibility::Self_);
+        assert_eq!(visibility("private_fn"), Visibility::Inherited);
+
+        let entries: Vec<_> = s.contract_entry_points().map(|f| f.name.as_str()).collect();
+        assert_eq!(entries, vec!["public_fn"]);
     }
 
     #[test]

@@ -177,6 +177,10 @@ enum Command {
 }
 
 #[derive(Debug, Args)]
+#[command(after_help = "Examples:\n  \
+    soroban-scan scan ./contracts\n  \
+    soroban-scan scan ./contracts --format json --output report.json\n  \
+    soroban-scan scan ./contracts --min-severity high --fail-on high")]
 struct ScanArgs {
     /// Directory or file(s) to scan. Repeatable; results are merged.
     #[arg(default_value = ".", num_args = 1..)]
@@ -803,6 +807,9 @@ fn run_config(args: ConfigArgs) -> CliResult<u8> {
             let effective = load_config(config.as_deref(), Path::new("."), true)?;
             let registry = RuleRegistry::with_default_rules();
             validate_rule_ids(&effective, &registry)?;
+            for diagnostic in engine::override_diagnostics(&effective, &registry) {
+                eprintln!("warning: [{}] {}", diagnostic.code, diagnostic.message);
+            }
             println!(
                 "configuration is valid (min severity: {}, min confidence: {})",
                 effective.min_severity, effective.min_confidence
@@ -1000,16 +1007,6 @@ fn validate_rule_ids(config: &ScanConfig, registry: &RuleRegistry) -> CliResult<
     referenced.extend(&config.rules.disabled);
     referenced.extend(&config.rules.enabled);
     for id in referenced {
-        if registry.by_id(id).is_none() {
-            return Err(CliError::Usage(format!("unknown rule id: {id}")));
-        }
-    }
-    for id in config
-        .rules
-        .severity_overrides
-        .keys()
-        .chain(config.rules.confidence_overrides.keys())
-    {
         if registry.by_id(id).is_none() {
             return Err(CliError::Usage(format!("unknown rule id: {id}")));
         }

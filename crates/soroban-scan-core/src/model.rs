@@ -199,6 +199,9 @@ pub enum DiagnosticCode {
     /// A rule produced a finding without evidence.
     #[serde(rename = "RULE-003")]
     RuleMissingEvidence,
+    /// A rule override has no effect because the target is unknown or disabled.
+    #[serde(rename = "CONFIG-001")]
+    IneffectiveOverride,
 }
 
 impl DiagnosticCode {
@@ -212,6 +215,7 @@ impl DiagnosticCode {
             DiagnosticCode::RuleUnsafeLocation => "RULE-001",
             DiagnosticCode::RuleFileOutsideSet => "RULE-002",
             DiagnosticCode::RuleMissingEvidence => "RULE-003",
+            DiagnosticCode::IneffectiveOverride => "CONFIG-001",
         }
     }
 }

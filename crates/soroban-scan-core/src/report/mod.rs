@@ -331,6 +331,9 @@ struct ProjectSummary {
 #[derive(Debug, Serialize)]
 struct StatsSummary {
     files_analyzed: usize,
+    files_parsed: usize,
+    files_failed: usize,
+    files_skipped: usize,
     rules_run: usize,
     rules_skipped: usize,
     findings_raw: usize,
@@ -395,6 +398,9 @@ pub fn render_json(outcome: &ScanOutcome) -> Result<String, serde_json::Error> {
         },
         stats: StatsSummary {
             files_analyzed: outcome.stats.files_analyzed,
+            files_parsed: outcome.stats.files_parsed,
+            files_failed: outcome.stats.files_failed,
+            files_skipped: outcome.stats.files_skipped,
             rules_run: outcome.stats.rules_run,
             rules_skipped: outcome.stats.rules_skipped,
             findings_raw: outcome.stats.findings_raw,

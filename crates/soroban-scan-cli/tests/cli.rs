@@ -251,6 +251,20 @@ fn version_exits_zero_and_prints_name() {
 }
 
 #[test]
+fn scan_help_includes_copy_pasteable_examples() {
+    let out = run(&["scan", "--help"]);
+    assert_eq!(out.code, 0);
+    assert!(out.stdout.contains("Examples:"));
+    assert!(out.stdout.contains("soroban-scan scan ./contracts"));
+    assert!(out
+        .stdout
+        .contains("soroban-scan scan ./contracts --format json --output report.json"));
+    assert!(out
+        .stdout
+        .contains("soroban-scan scan ./contracts --min-severity high --fail-on high"));
+}
+
+#[test]
 fn rules_lists_built_in_rules() {
     let out = run(&["rules"]);
     assert_eq!(out.code, 0);
@@ -390,6 +404,94 @@ fn init_creates_then_refuses_to_overwrite() {
 
     let second = run(&["init", dir.to_str().unwrap()]);
     assert_eq!(second.code, 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn scan_json_reports_parse_telemetry() {
+    let dir = std::env::temp_dir().join(format!(
+        "soroban-scan-cli-parse-stats-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/lib.rs"), "fn good() {}\n").unwrap();
+    std::fs::write(dir.join("src/broken.rs"), "fn broken( {\n").unwrap();
+
+    let out = run(&[
+        "scan",
+        dir.to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    assert_eq!(value["stats"]["files_analyzed"], 2);
+    assert_eq!(value["stats"]["files_parsed"], 1);
+    assert_eq!(value["stats"]["files_failed"], 1);
+    assert_eq!(value["stats"]["files_skipped"], 0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ineffective_overrides_emit_diagnostics() {
+    let dir =
+        std::env::temp_dir().join(format!("soroban-scan-cli-overrides-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/lib.rs"), "fn a() {}\n").unwrap();
+    let config = dir.join("scan.toml");
+    std::fs::write(
+        &config,
+        "[rules]\ndisabled = [\"SS-007\"]\n\
+         severity_overrides = { SS-999 = \"high\", SS-007 = \"low\" }\n\
+         confidence_overrides = { SS-007 = \"high\" }\n",
+    )
+    .unwrap();
+
+    let out = run(&[
+        "scan",
+        dir.to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    let messages: Vec<&str> = value["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|diagnostic| diagnostic["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("SS-999") && message.contains("unknown rule id")),
+        "got: {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("severity and confidence override for SS-007")
+                && message.contains("disabled by configuration")
+        }),
+        "got: {messages:?}"
+    );
+
+    let validate = run(&["config", "validate", "--config", config.to_str().unwrap()]);
+    assert_eq!(validate.code, 0, "stderr: {}", validate.stderr);
+    assert!(
+        validate.stderr.contains("CONFIG-001"),
+        "got: {}",
+        validate.stderr
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

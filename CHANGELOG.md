@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scan --help` now includes three copy-pasteable examples.
+- Scan statistics and JSON output include `files_parsed`, `files_failed`, and
+  `files_skipped`, making parse coverage gaps visible.
+- Function visibility is exposed as `source::Visibility` (`public`, `crate`,
+  `super`, `self`, `inherited`); only true `pub` functions are contract entry
+  points, so `pub(crate)` helpers are no longer treated as exported.
+- Ineffective severity/confidence overrides emit a `CONFIG-001` diagnostic when
+  the target rule is unknown or disabled. `config validate` prints the same
+  warnings without failing.
 - `--max-findings N` for `scan`: bounds the rendered report after the
   deterministic sort, prints an explicit omitted-findings notice in every
   format, and exposes `truncation` (`shown`, `total`, `omitted`) in JSON and
