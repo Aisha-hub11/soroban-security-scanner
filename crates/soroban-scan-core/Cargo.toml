@@ -31,3 +31,6 @@ sha2.workspace = true
 hex.workspace = true
 ureq = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = "1"
