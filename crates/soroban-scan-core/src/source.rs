@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use quote::ToTokens;
 use syn::spanned::Spanned;
+use syn::visit::Visit;
 
 use crate::error::ScanError;
 use crate::model::{Diagnostic, DiagnosticCode, Project, SorobanInfo};
@@ -193,6 +194,8 @@ pub struct FunctionSummary {
     pub trait_path: Option<String>,
     /// Attribute path strings on the enclosing impl block.
     pub impl_attributes: Vec<String>,
+    /// True when the function is a `const fn`.
+    pub is_const: bool,
     /// True when the function is an exported contract entry point
     /// (`pub fn` inside a `#[contractimpl]` block).
     pub is_contract_entry_point: bool,
@@ -219,6 +222,113 @@ pub struct ItemSummary {
     pub attributes: Vec<String>,
 }
 
+/// A `macro_rules!` definition found in a source file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroDefinition {
+    /// Macro name.
+    pub name: String,
+    /// 1-based line of the definition.
+    pub line: usize,
+    /// 1-based column of the definition.
+    pub column: usize,
+    /// 1-based end line of the definition.
+    pub end_line: usize,
+}
+
+/// A macro invocation found in a source file.
+///
+/// Invocations are recorded as written. They are never expanded or resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroInvocation {
+    /// Path as written, for example `helper` or `foo::bar`.
+    pub name: String,
+    /// 1-based line of the invocation.
+    pub line: usize,
+    /// 1-based column of the invocation.
+    pub column: usize,
+    /// 1-based end line of the invocation.
+    pub end_line: usize,
+}
+
+/// Kind of a generated-code marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneratedMarkerKind {
+    /// A `@generated` marker inside a comment.
+    GeneratedComment,
+    /// An `include!` invocation.
+    IncludeMacro,
+}
+
+impl GeneratedMarkerKind {
+    /// Stable lowercase label.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GeneratedMarkerKind::GeneratedComment => "generated_comment",
+            GeneratedMarkerKind::IncludeMacro => "include_macro",
+        }
+    }
+}
+
+/// A lexical generated-code marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedMarker {
+    /// Marker kind.
+    pub kind: GeneratedMarkerKind,
+    /// 1-based line where the marker occurs.
+    pub line: usize,
+    /// 1-based column where the marker occurs.
+    pub column: usize,
+}
+
+/// Kind of a const/static value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueKind {
+    /// `const`.
+    Const,
+    /// `static`.
+    Static,
+    /// `static mut`.
+    StaticMut,
+}
+
+impl ValueKind {
+    /// Stable lowercase label.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ValueKind::Const => "const",
+            ValueKind::Static => "static",
+            ValueKind::StaticMut => "static_mut",
+        }
+    }
+}
+
+/// A `const` or `static` value.
+///
+/// The initializer is rendered as source text and is **never evaluated**.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstSummary {
+    /// Value kind.
+    pub kind: ValueKind,
+    /// Unqualified name.
+    pub name: String,
+    /// Name qualified by any enclosing module and impl/trait.
+    pub qualified_name: String,
+    /// Rendered declared type.
+    pub ty: String,
+    /// Rendered initializer expression.
+    pub value: String,
+    /// 1-based line.
+    pub line: usize,
+    /// 1-based column.
+    pub column: usize,
+    /// 1-based end line.
+    pub end_line: usize,
+    /// Declared visibility.
+    pub visibility: Visibility,
+    /// Attribute path strings.
+    pub attributes: Vec<String>,
+}
+
 /// A parsed Rust source file.
 pub struct ParsedSource {
     /// File path.
@@ -233,6 +343,14 @@ pub struct ParsedSource {
     pub items: Vec<ItemSummary>,
     /// Function definitions.
     pub functions: Vec<FunctionSummary>,
+    /// `const` and `static` values.
+    pub constants: Vec<ConstSummary>,
+    /// `macro_rules!` definitions.
+    pub macro_definitions: Vec<MacroDefinition>,
+    /// Macro invocations, recorded without expansion.
+    pub macro_invocations: Vec<MacroInvocation>,
+    /// Lexical generated-code markers.
+    pub generated_markers: Vec<GeneratedMarker>,
     /// `#[contracttype]`/`#[contracterror]` structs and enums.
     pub contract_types: Vec<ContractTypeSummary>,
     /// Locations of contract definitions, formatted as `path:line`.
@@ -245,6 +363,11 @@ impl ParsedSource {
     /// Returns true if the file parsed successfully.
     pub fn is_parsed(&self) -> bool {
         self.syntax.is_some()
+    }
+
+    /// Returns true when a generated-code marker or `include!` was found.
+    pub fn is_generated(&self) -> bool {
+        !self.generated_markers.is_empty()
     }
 
     /// Returns functions that are Soroban contract entry points.
@@ -309,6 +432,14 @@ fn pat_name(pat: &syn::Pat) -> String {
     }
 }
 
+/// Renders a type as source text.
+///
+/// Shared by function parameters, return types, and const/static declarations so
+/// every inventory entry uses the same deterministic representation.
+fn render_type(ty: &syn::Type) -> String {
+    ty.to_token_stream().to_string()
+}
+
 fn params_of(sig: &syn::Signature) -> Vec<ParamSummary> {
     sig.inputs
         .iter()
@@ -316,7 +447,7 @@ fn params_of(sig: &syn::Signature) -> Vec<ParamSummary> {
             syn::FnArg::Receiver(_) => None,
             syn::FnArg::Typed(pt) => Some(ParamSummary {
                 name: pat_name(&pt.pat),
-                ty: pt.ty.to_token_stream().to_string(),
+                ty: render_type(&pt.ty),
             }),
         })
         .collect()
@@ -325,7 +456,7 @@ fn params_of(sig: &syn::Signature) -> Vec<ParamSummary> {
 fn return_of(sig: &syn::Signature) -> Option<String> {
     match &sig.output {
         syn::ReturnType::Default => None,
-        syn::ReturnType::Type(_, ty) => Some(ty.to_token_stream().to_string()),
+        syn::ReturnType::Type(_, ty) => Some(render_type(ty)),
     }
 }
 
@@ -354,6 +485,15 @@ struct ImplContext {
     attributes: Vec<String>,
 }
 
+fn qualified_name(name: &str, prefix: &str, impl_ctx: Option<&ImplContext>) -> String {
+    match impl_ctx {
+        Some(ctx) if prefix.is_empty() => format!("{}::{}", ctx.name, name),
+        Some(ctx) => format!("{}::{}::{}", prefix, ctx.name, name),
+        None if prefix.is_empty() => name.to_string(),
+        None => format!("{prefix}::{name}"),
+    }
+}
+
 fn make_function(
     sig: &syn::Signature,
     attrs: &[syn::Attribute],
@@ -362,12 +502,7 @@ fn make_function(
     impl_ctx: Option<&ImplContext>,
 ) -> FunctionSummary {
     let name = sig.ident.to_string();
-    let qualified_name = match impl_ctx {
-        Some(ctx) if prefix.is_empty() => format!("{}::{}", ctx.name, name),
-        Some(ctx) => format!("{}::{}::{}", prefix, ctx.name, name),
-        None if prefix.is_empty() => name.clone(),
-        None => format!("{prefix}::{name}"),
-    };
+    let qualified_name = qualified_name(&name, prefix, impl_ctx);
     let impl_attributes = impl_ctx.map(|c| c.attributes.clone()).unwrap_or_default();
     let is_contract_entry_point = visibility.is_public()
         && impl_attributes.iter().any(|a| {
@@ -391,7 +526,37 @@ fn make_function(
         in_impl: impl_ctx.map(|c| c.name.clone()),
         trait_path: impl_ctx.and_then(|c| c.trait_path.clone()),
         impl_attributes,
+        is_const: sig.constness.is_some(),
         is_contract_entry_point,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_const(
+    kind: ValueKind,
+    name: &syn::Ident,
+    ty: &syn::Type,
+    value: Option<&syn::Expr>,
+    attrs: &[syn::Attribute],
+    visibility: Visibility,
+    prefix: &str,
+    impl_ctx: Option<&ImplContext>,
+    span: (usize, usize, usize),
+) -> ConstSummary {
+    let name = name.to_string();
+    ConstSummary {
+        kind,
+        qualified_name: qualified_name(&name, prefix, impl_ctx),
+        name,
+        ty: render_type(ty),
+        value: value
+            .map(|expr| expr.to_token_stream().to_string())
+            .unwrap_or_default(),
+        line: span.0,
+        column: span.1,
+        end_line: span.2,
+        visibility,
+        attributes: attribute_paths(attrs),
     }
 }
 
@@ -403,6 +568,7 @@ fn walk_items(
     file: &Path,
     out_items: &mut Vec<ItemSummary>,
     out_functions: &mut Vec<FunctionSummary>,
+    out_constants: &mut Vec<ConstSummary>,
     out_contract_types: &mut Vec<ContractTypeSummary>,
     out_contract: &mut Vec<String>,
 ) {
@@ -450,24 +616,48 @@ fn walk_items(
                     attributes: attribute_paths(&attrs),
                 };
                 for impl_item in &imp.items {
-                    if let syn::ImplItem::Fn(f) = impl_item {
-                        let f_attrs = f.attrs.clone();
-                        let (fl, fc) = span_start(&f.sig);
-                        let fe = span_end_line(&f.sig);
-                        out_items.push(item_summary(
-                            ItemKind::Function,
-                            f.sig.ident.to_string(),
-                            &f_attrs,
-                            vis_is_public(&f.vis),
-                            (fl, fc, fe),
-                        ));
-                        out_functions.push(make_function(
-                            &f.sig,
-                            &f_attrs,
-                            visibility_of(&f.vis),
-                            prefix,
-                            Some(&ctx),
-                        ));
+                    match impl_item {
+                        syn::ImplItem::Fn(f) => {
+                            let f_attrs = f.attrs.clone();
+                            let (fl, fc) = span_start(&f.sig);
+                            let fe = span_end_line(&f.sig);
+                            out_items.push(item_summary(
+                                ItemKind::Function,
+                                f.sig.ident.to_string(),
+                                &f_attrs,
+                                vis_is_public(&f.vis),
+                                (fl, fc, fe),
+                            ));
+                            out_functions.push(make_function(
+                                &f.sig,
+                                &f_attrs,
+                                visibility_of(&f.vis),
+                                prefix,
+                                Some(&ctx),
+                            ));
+                        }
+                        syn::ImplItem::Const(c) => {
+                            let (cl, cc) = span_start(c);
+                            out_items.push(item_summary(
+                                ItemKind::Const,
+                                c.ident.to_string(),
+                                &c.attrs,
+                                vis_is_public(&c.vis),
+                                (cl, cc, span_end_line(c)),
+                            ));
+                            out_constants.push(make_const(
+                                ValueKind::Const,
+                                &c.ident,
+                                &c.ty,
+                                Some(&c.expr),
+                                &c.attrs,
+                                visibility_of(&c.vis),
+                                prefix,
+                                Some(&ctx),
+                                (cl, cc, span_end_line(c)),
+                            ));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -486,15 +676,32 @@ fn walk_items(
                     attributes: attribute_paths(&attrs),
                 };
                 for trait_item in &tr.items {
-                    if let syn::TraitItem::Fn(f) = trait_item {
-                        let f_attrs = f.attrs.clone();
-                        out_functions.push(make_function(
-                            &f.sig,
-                            &f_attrs,
-                            Visibility::Inherited,
-                            prefix,
-                            Some(&ctx),
-                        ));
+                    match trait_item {
+                        syn::TraitItem::Fn(f) => {
+                            let f_attrs = f.attrs.clone();
+                            out_functions.push(make_function(
+                                &f.sig,
+                                &f_attrs,
+                                Visibility::Inherited,
+                                prefix,
+                                Some(&ctx),
+                            ));
+                        }
+                        syn::TraitItem::Const(c) => {
+                            let (cl, cc) = span_start(c);
+                            out_constants.push(make_const(
+                                ValueKind::Const,
+                                &c.ident,
+                                &c.ty,
+                                c.default.as_ref().map(|(_, expr)| expr),
+                                &c.attrs,
+                                Visibility::Inherited,
+                                prefix,
+                                Some(&ctx),
+                                (cl, cc, span_end_line(c)),
+                            ));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -520,6 +727,7 @@ fn walk_items(
                         file,
                         out_items,
                         out_functions,
+                        out_constants,
                         out_contract_types,
                         out_contract,
                     );
@@ -571,20 +779,51 @@ fn walk_items(
                 vis_is_public(&u.vis),
                 (line, column, end_line),
             )),
-            syn::Item::Const(c) => out_items.push(item_summary(
-                ItemKind::Const,
-                c.ident.to_string(),
-                &attrs,
-                vis_is_public(&c.vis),
-                (line, column, end_line),
-            )),
-            syn::Item::Static(s) => out_items.push(item_summary(
-                ItemKind::Static,
-                s.ident.to_string(),
-                &attrs,
-                vis_is_public(&s.vis),
-                (line, column, end_line),
-            )),
+            syn::Item::Const(c) => {
+                out_items.push(item_summary(
+                    ItemKind::Const,
+                    c.ident.to_string(),
+                    &attrs,
+                    vis_is_public(&c.vis),
+                    (line, column, end_line),
+                ));
+                out_constants.push(make_const(
+                    ValueKind::Const,
+                    &c.ident,
+                    &c.ty,
+                    Some(&c.expr),
+                    &attrs,
+                    visibility_of(&c.vis),
+                    prefix,
+                    impl_ctx,
+                    (line, column, end_line),
+                ));
+            }
+            syn::Item::Static(s) => {
+                out_items.push(item_summary(
+                    ItemKind::Static,
+                    s.ident.to_string(),
+                    &attrs,
+                    vis_is_public(&s.vis),
+                    (line, column, end_line),
+                ));
+                let kind = if matches!(s.mutability, syn::StaticMutability::Mut(_)) {
+                    ValueKind::StaticMut
+                } else {
+                    ValueKind::Static
+                };
+                out_constants.push(make_const(
+                    kind,
+                    &s.ident,
+                    &s.ty,
+                    Some(&s.expr),
+                    &attrs,
+                    visibility_of(&s.vis),
+                    prefix,
+                    impl_ctx,
+                    (line, column, end_line),
+                ));
+            }
             syn::Item::Macro(m) => out_items.push(item_summary(
                 ItemKind::Macro,
                 m.mac
@@ -883,6 +1122,311 @@ pub fn max_delimiter_depth(src: &str) -> usize {
     max_depth
 }
 
+#[derive(Default)]
+struct MacroInventory {
+    definitions: Vec<MacroDefinition>,
+    invocations: Vec<MacroInvocation>,
+}
+
+impl MacroInventory {
+    fn record_invocation(&mut self, mac: &syn::Macro) {
+        let name = mac
+            .path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        let (line, column) = span_start(mac);
+        self.invocations.push(MacroInvocation {
+            name,
+            line,
+            column,
+            end_line: span_end_line(mac),
+        });
+    }
+}
+
+impl<'ast> Visit<'ast> for MacroInventory {
+    fn visit_item_macro(&mut self, node: &'ast syn::ItemMacro) {
+        if let Some(ident) = &node.ident {
+            let (line, column) = span_start(node);
+            self.definitions.push(MacroDefinition {
+                name: ident.to_string(),
+                line,
+                column,
+                end_line: span_end_line(node),
+            });
+            return;
+        }
+        self.record_invocation(&node.mac);
+    }
+
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        // A `macro_rules!` definition is handled by `visit_item_macro`; never
+        // record it as a use. Macro bodies are opaque token streams, so no
+        // expansion or resolution is attempted.
+        if node
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "macro_rules")
+        {
+            return;
+        }
+        self.record_invocation(node);
+    }
+}
+
+fn macro_inventory(file: &syn::File) -> (Vec<MacroDefinition>, Vec<MacroInvocation>) {
+    let mut inventory = MacroInventory::default();
+    inventory.visit_file(file);
+    inventory.definitions.sort_by(|a, b| {
+        (a.line, a.column, a.name.as_str()).cmp(&(b.line, b.column, b.name.as_str()))
+    });
+    inventory.invocations.sort_by(|a, b| {
+        (a.line, a.column, a.name.as_str()).cmp(&(b.line, b.column, b.name.as_str()))
+    });
+    inventory.invocations.dedup();
+    (inventory.definitions, inventory.invocations)
+}
+
+fn find_generated_marker(text: &str) -> Option<usize> {
+    text.to_ascii_lowercase().find("@generated")
+}
+
+fn marker_position(
+    text: &str,
+    offset: usize,
+    start_line: usize,
+    start_column: usize,
+) -> (usize, usize) {
+    let before = &text[..offset];
+    let newlines = before.matches('\n').count();
+    if newlines == 0 {
+        (start_line, start_column + before.chars().count())
+    } else {
+        let line = start_line + newlines;
+        let column = before
+            .rsplit('\n')
+            .next()
+            .map(|text| text.chars().count() + 1)
+            .unwrap_or(1);
+        (line, column)
+    }
+}
+
+fn advance_position(
+    bytes: &[u8],
+    from: usize,
+    to: usize,
+    line: &mut usize,
+    line_start: &mut usize,
+) {
+    let end = to.min(bytes.len());
+    for (offset, byte) in bytes[from..end].iter().enumerate() {
+        if *byte == b'\n' {
+            *line += 1;
+            *line_start = from + offset + 1;
+        }
+    }
+}
+
+fn raw_string_prefix(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+    let mut index = start;
+    if bytes.get(index) == Some(&b'b') {
+        if bytes.get(index + 1) == Some(&b'r') {
+            index += 1;
+        } else {
+            return None;
+        }
+    }
+    if bytes.get(index) != Some(&b'r') {
+        return None;
+    }
+    index += 1;
+    let mut hashes = 0usize;
+    while bytes.get(index) == Some(&b'#') {
+        hashes += 1;
+        index += 1;
+    }
+    if bytes.get(index) == Some(&b'"') {
+        Some((hashes, index + 1))
+    } else {
+        None
+    }
+}
+
+fn raw_string_end(bytes: &[u8], from: usize, hashes: usize) -> Option<usize> {
+    let n = bytes.len();
+    let mut index = from;
+    while index < n {
+        if bytes[index] == b'"' {
+            let mut offset = 0usize;
+            while offset < hashes && bytes.get(index + 1 + offset) == Some(&b'#') {
+                offset += 1;
+            }
+            if offset == hashes {
+                return Some(index + 1 + hashes);
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn is_ident_start(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+/// Detects generated-code markers lexically.
+///
+/// `@generated` is recognized only inside comments and `include!` only as code
+/// outside strings and comments. Detection never parses or expands the macro.
+pub fn detect_generated_markers(source: &str) -> Vec<GeneratedMarker> {
+    let bytes = source.as_bytes();
+    let n = bytes.len();
+    let mut markers = Vec::new();
+    let mut index = 0usize;
+    let mut line = 1usize;
+    let mut line_start = 0usize;
+
+    let column_at = |offset: usize, line_start: usize| {
+        source
+            .get(line_start..offset)
+            .map(|text| text.chars().count() + 1)
+            .unwrap_or(1)
+    };
+
+    while index < n {
+        match bytes[index] {
+            b'\n' => {
+                line += 1;
+                line_start = index + 1;
+                index += 1;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                let start = index + 2;
+                let mut end = start;
+                while end < n && bytes[end] != b'\n' {
+                    end += 1;
+                }
+                let text = &source[start..end];
+                if let Some(offset) = find_generated_marker(text) {
+                    let (marker_line, marker_column) =
+                        marker_position(text, offset, line, column_at(start, line_start));
+                    markers.push(GeneratedMarker {
+                        kind: GeneratedMarkerKind::GeneratedComment,
+                        line: marker_line,
+                        column: marker_column,
+                    });
+                }
+                index = end;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                let start = index + 2;
+                let start_line = line;
+                let start_column = column_at(start, line_start);
+                let mut end = start;
+                let mut depth = 1usize;
+                while end < n && depth > 0 {
+                    if bytes.get(end) == Some(&b'/') && bytes.get(end + 1) == Some(&b'*') {
+                        depth += 1;
+                        end += 2;
+                    } else if bytes.get(end) == Some(&b'*') && bytes.get(end + 1) == Some(&b'/') {
+                        depth -= 1;
+                        end += 2;
+                    } else {
+                        end += 1;
+                    }
+                }
+                let content_end = if depth == 0 { end.saturating_sub(2) } else { n };
+                let text = &source[start..content_end];
+                if let Some(offset) = find_generated_marker(text) {
+                    let (marker_line, marker_column) =
+                        marker_position(text, offset, start_line, start_column);
+                    markers.push(GeneratedMarker {
+                        kind: GeneratedMarkerKind::GeneratedComment,
+                        line: marker_line,
+                        column: marker_column,
+                    });
+                }
+                advance_position(bytes, index, end, &mut line, &mut line_start);
+                index = end;
+            }
+            b'"' => {
+                let end = skip_string(bytes, index + 1);
+                advance_position(bytes, index, end, &mut line, &mut line_start);
+                index = end;
+            }
+            b'\'' => {
+                let end = skip_char_literal(bytes, index + 1);
+                advance_position(bytes, index, end, &mut line, &mut line_start);
+                index = end;
+            }
+            b'r' | b'b' => {
+                if let Some((hashes, content_start)) = raw_string_prefix(bytes, index) {
+                    let end = raw_string_end(bytes, content_start, hashes).unwrap_or(n);
+                    advance_position(bytes, index, end, &mut line, &mut line_start);
+                    index = end;
+                } else {
+                    let start = index;
+                    let mut end = index + 1;
+                    while end < n && is_ident_continue(bytes[end]) {
+                        end += 1;
+                    }
+                    if &source[start..end] == "include" {
+                        let mut after = end;
+                        while after < n && bytes[after].is_ascii_whitespace() {
+                            after += 1;
+                        }
+                        if bytes.get(after) == Some(&b'!') {
+                            markers.push(GeneratedMarker {
+                                kind: GeneratedMarkerKind::IncludeMacro,
+                                line,
+                                column: column_at(start, line_start),
+                            });
+                        }
+                    }
+                    index = end;
+                }
+            }
+            byte if is_ident_start(byte) => {
+                let start = index;
+                let mut end = index + 1;
+                while end < n && is_ident_continue(bytes[end]) {
+                    end += 1;
+                }
+                if &source[start..end] == "include" {
+                    let mut after = end;
+                    while after < n && bytes[after].is_ascii_whitespace() {
+                        after += 1;
+                    }
+                    if bytes.get(after) == Some(&b'!') {
+                        markers.push(GeneratedMarker {
+                            kind: GeneratedMarkerKind::IncludeMacro,
+                            line,
+                            column: column_at(start, line_start),
+                        });
+                    }
+                }
+                index = end;
+            }
+            _ => index += 1,
+        }
+    }
+
+    markers.sort_by(|a, b| {
+        (a.line, a.column, a.kind.as_str()).cmp(&(b.line, b.column, b.kind.as_str()))
+    });
+    markers.dedup();
+    markers
+}
+
 /// Parses a single source file's content.
 pub fn parse_source(path: &Path, crate_root: &Path, content: &str) -> ParsedSource {
     parse_source_with_options(path, crate_root, content, false)
@@ -899,6 +1443,7 @@ pub fn parse_source_with_options(
     exclude_tests: bool,
 ) -> ParsedSource {
     let module_path = module_path_for(path, crate_root);
+    let generated_markers = detect_generated_markers(content);
 
     if max_delimiter_depth(content) > MAX_NESTING_DEPTH {
         return ParsedSource {
@@ -910,6 +1455,10 @@ pub fn parse_source_with_options(
             )),
             items: Vec::new(),
             functions: Vec::new(),
+            constants: Vec::new(),
+            macro_definitions: Vec::new(),
+            macro_invocations: Vec::new(),
+            generated_markers,
             contract_types: Vec::new(),
             contract_definitions: Vec::new(),
             suppressions: Vec::new(),
@@ -923,6 +1472,7 @@ pub fn parse_source_with_options(
             }
             let mut items = Vec::new();
             let mut functions = Vec::new();
+            let mut constants = Vec::new();
             let mut contract_types = Vec::new();
             let mut contract_definitions = Vec::new();
             walk_items(
@@ -932,9 +1482,11 @@ pub fn parse_source_with_options(
                 path,
                 &mut items,
                 &mut functions,
+                &mut constants,
                 &mut contract_types,
                 &mut contract_definitions,
             );
+            let (macro_definitions, macro_invocations) = macro_inventory(&file);
             let suppressions = crate::suppression::detect(content, path, &item_spans(&file));
             ParsedSource {
                 path: path.to_path_buf(),
@@ -943,6 +1495,10 @@ pub fn parse_source_with_options(
                 parse_error: None,
                 items,
                 functions,
+                constants,
+                macro_definitions,
+                macro_invocations,
+                generated_markers,
                 contract_types,
                 contract_definitions,
                 suppressions,
@@ -955,6 +1511,10 @@ pub fn parse_source_with_options(
             parse_error: Some(err.to_string()),
             items: Vec::new(),
             functions: Vec::new(),
+            constants: Vec::new(),
+            macro_definitions: Vec::new(),
+            macro_invocations: Vec::new(),
+            generated_markers,
             contract_types: Vec::new(),
             contract_definitions: Vec::new(),
             suppressions: Vec::new(),
@@ -1205,6 +1765,25 @@ fn associate_crate_root(
     }
 }
 
+/// Options controlling source loading and generated-code handling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceOptions {
+    /// Skip items gated behind `#[cfg(test)]`.
+    pub exclude_tests: bool,
+    /// Exclude files with generated-code markers instead of marking them.
+    pub exclude_generated: bool,
+}
+
+/// Parsed sources plus load-time diagnostics and generated-file counts.
+pub struct LoadedSources {
+    /// Parsed source files.
+    pub sources: Vec<ParsedSource>,
+    /// Diagnostics produced while loading.
+    pub diagnostics: Vec<Diagnostic>,
+    /// Generated files excluded before analysis.
+    pub generated_files_excluded: usize,
+}
+
 /// Loads and parses a set of Rust source files.
 ///
 /// Unreadable or oversized files produce diagnostics and are skipped. Every
@@ -1215,10 +1794,30 @@ pub fn load_sources(
     root: &Path,
     exclude_tests: bool,
 ) -> (Vec<ParsedSource>, Vec<Diagnostic>) {
+    let loaded = load_sources_with_options(
+        files,
+        manifests,
+        root,
+        SourceOptions {
+            exclude_tests,
+            exclude_generated: false,
+        },
+    );
+    (loaded.sources, loaded.diagnostics)
+}
+
+/// Loads sources with generated-code marking or exclusion.
+pub fn load_sources_with_options(
+    files: &[PathBuf],
+    manifests: &[crate::model::Manifest],
+    root: &Path,
+    options: SourceOptions,
+) -> LoadedSources {
     let candidates = crate_root_candidates(manifests);
 
     let mut sources = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut generated_files_excluded = 0usize;
 
     for path in files {
         match std::fs::metadata(path) {
@@ -1264,7 +1863,7 @@ pub fn load_sources(
                 Some(path.clone()),
             ));
         }
-        let source = parse_source_with_options(path, &crate_root, &content, exclude_tests);
+        let source = parse_source_with_options(path, &crate_root, &content, options.exclude_tests);
         if let Some(err) = &source.parse_error {
             diagnostics.push(Diagnostic::warning(
                 DiagnosticCode::ParseFailed,
@@ -1272,10 +1871,62 @@ pub fn load_sources(
                 Some(path.clone()),
             ));
         }
+
+        if source.is_generated() {
+            if options.exclude_generated {
+                generated_files_excluded += 1;
+                diagnostics.push(Diagnostic::info(
+                    DiagnosticCode::GeneratedFileExcluded,
+                    format!(
+                        "excluding generated source file ({} marker(s); exclude_generated is enabled)",
+                        source.generated_markers.len()
+                    ),
+                    Some(path.clone()),
+                ));
+                continue;
+            }
+            diagnostics.push(Diagnostic::info(
+                DiagnosticCode::GeneratedFileMarked,
+                format!(
+                    "source file is marked as generated ({} marker(s)); findings are still reported",
+                    source.generated_markers.len()
+                ),
+                Some(path.clone()),
+            ));
+        }
+
+        if !source.macro_invocations.is_empty() {
+            let mut names: Vec<&str> = source
+                .macro_invocations
+                .iter()
+                .map(|invocation| invocation.name.as_str())
+                .collect();
+            names.sort_unstable();
+            names.dedup();
+            let shown = names.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+            let suffix = if names.len() > 5 {
+                format!(" (+{} more)", names.len() - 5)
+            } else {
+                String::new()
+            };
+            diagnostics.push(Diagnostic::info(
+                DiagnosticCode::UnexpandedMacro,
+                format!(
+                    "{} macro invocation(s) were not expanded: {shown}{suffix}",
+                    source.macro_invocations.len()
+                ),
+                Some(path.clone()),
+            ));
+        }
+
         sources.push(source);
     }
 
-    (sources, diagnostics)
+    LoadedSources {
+        sources,
+        diagnostics,
+        generated_files_excluded,
+    }
 }
 
 /// Applies contract-definition evidence from parsed sources to a project.
@@ -1686,5 +2337,156 @@ fn available_in_production() {}
         let parsed = parse(&src);
         assert!(parsed.parse_error.is_some());
         assert!(!parsed.is_parsed());
+    }
+
+    #[test]
+    fn inventories_macro_definitions_and_invocations() {
+        let src = concat!(
+            "macro_rules! helper { ($value:expr) => { $value }; }\n",
+            "fn run() {\n",
+            "    helper!(1);\n",
+            "    other::call!();\n",
+            "}\n",
+        );
+        let s = parse(src);
+        assert_eq!(s.macro_definitions.len(), 1);
+        assert_eq!(s.macro_definitions[0].name, "helper");
+        assert_eq!(s.macro_definitions[0].line, 1);
+        let names: Vec<_> = s
+            .macro_invocations
+            .iter()
+            .map(|invocation| invocation.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["helper", "other::call"]);
+        assert_eq!(s.macro_invocations[0].line, 3);
+        assert_eq!(s.macro_invocations[1].line, 4);
+    }
+
+    #[test]
+    fn loads_the_macro_helper_fixture() {
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/parser/macro_helper.rs"
+        ));
+        let content = std::fs::read_to_string(path).unwrap();
+        let s = parse(&content);
+        assert!(s.is_parsed());
+        assert!(s
+            .macro_definitions
+            .iter()
+            .any(|definition| definition.name == "checked_add"));
+        assert!(s
+            .macro_invocations
+            .iter()
+            .any(|invocation| invocation.name == "checked_add"));
+    }
+
+    #[test]
+    fn detects_generated_markers_lexically() {
+        let src = concat!(
+            "const TEXT: &str = \"@generated\";\n",
+            "// @generated by a code generator\n",
+            "const INCLUDE: &str = \"include!(\\\"generated.rs\\\")\";\n",
+            "// include!(\"not-a-macro.rs\")\n",
+            "include!(\"generated.rs\");\n",
+            "/*\n",
+            " * @generated\n",
+            " */\n",
+        );
+        let s = parse(src);
+        assert!(s.is_generated());
+        let markers: Vec<_> = s
+            .generated_markers
+            .iter()
+            .map(|marker| (marker.kind, marker.line))
+            .collect();
+        assert_eq!(
+            markers,
+            vec![
+                (GeneratedMarkerKind::GeneratedComment, 2),
+                (GeneratedMarkerKind::IncludeMacro, 5),
+                (GeneratedMarkerKind::GeneratedComment, 7),
+            ]
+        );
+    }
+
+    #[test]
+    fn loads_the_generated_marker_fixture() {
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/parser/generated_marker.rs"
+        ));
+        let content = std::fs::read_to_string(path).unwrap();
+        let s = parse(&content);
+        assert!(s.is_generated());
+        assert!(s
+            .generated_markers
+            .iter()
+            .any(|marker| marker.kind == GeneratedMarkerKind::GeneratedComment));
+    }
+
+    #[test]
+    fn inventories_const_static_and_const_fn() {
+        let src = concat!(
+            "pub const LIMIT: u32 = 10 + 2;\n",
+            "static NAME: &str = \"vault\";\n",
+            "static mut COUNTER: i32 = 0;\n",
+            "pub const fn ceiling() -> u32 { LIMIT }\n",
+            "impl Vault {\n",
+            "    const ASSOC: u64 = 1;\n",
+            "}\n",
+            "trait T {\n",
+            "    const DEFAULT: u8;\n",
+            "}\n",
+        );
+        let s = parse(src);
+        let limit = s
+            .constants
+            .iter()
+            .find(|constant| constant.name == "LIMIT")
+            .unwrap();
+        assert_eq!(limit.kind, ValueKind::Const);
+        assert_eq!(limit.ty, "u32");
+        assert_eq!(limit.value, "10 + 2");
+        assert_eq!(limit.qualified_name, "LIMIT");
+        assert_eq!(limit.visibility, Visibility::Public);
+
+        let name = s
+            .constants
+            .iter()
+            .find(|constant| constant.name == "NAME")
+            .unwrap();
+        assert_eq!(name.kind, ValueKind::Static);
+        assert_eq!(name.ty, "& str");
+        assert_eq!(name.value, "\"vault\"");
+
+        let counter = s
+            .constants
+            .iter()
+            .find(|constant| constant.name == "COUNTER")
+            .unwrap();
+        assert_eq!(counter.kind, ValueKind::StaticMut);
+
+        let assoc = s
+            .constants
+            .iter()
+            .find(|constant| constant.name == "ASSOC")
+            .unwrap();
+        assert_eq!(assoc.qualified_name, "Vault::ASSOC");
+
+        let default = s
+            .constants
+            .iter()
+            .find(|constant| constant.name == "DEFAULT")
+            .unwrap();
+        assert_eq!(default.value, "");
+
+        let ceiling = s
+            .functions
+            .iter()
+            .find(|function| function.name == "ceiling")
+            .unwrap();
+        assert!(ceiling.is_const);
+        assert_eq!(ceiling.return_type.as_deref(), Some("u32"));
     }
 }

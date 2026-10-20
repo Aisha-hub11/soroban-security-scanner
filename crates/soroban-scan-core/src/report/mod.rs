@@ -8,7 +8,10 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::config::ScanConfig;
-use crate::engine::{FindingTruncation, ScanOutcome, SuppressedFinding, SuppressionInfo};
+use crate::engine::{
+    ConfigSuppressionReport, FindingTruncation, ScanOutcome, SuppressedFinding, SuppressionInfo,
+    SuppressionSource,
+};
 use crate::finding::Finding;
 use crate::model::Diagnostic;
 use crate::registry::RuleRegistry;
@@ -260,11 +263,18 @@ pub fn render_terminal_with_color(outcome: &ScanOutcome, color: TerminalColor) -
         outcome.project.kind
     ));
     out.push_str(&format!(
-        "Files: {}  Rules run: {}  Skipped: {}  Suppressions: {}\n\n",
+        "Files: {}  Rules run: {}  Skipped: {}  Suppressions: {}\n",
         outcome.stats.files_analyzed,
         outcome.stats.rules_run,
         outcome.stats.rules_skipped,
         outcome.stats.suppressions_detected
+    ));
+    out.push_str(&format!(
+        "Generated: {} marked, {} excluded  Config suppressions: {} detected, {} applied\n\n",
+        outcome.stats.generated_files_marked,
+        outcome.stats.generated_files_excluded,
+        outcome.stats.config_suppressions_detected,
+        outcome.stats.config_suppressions_applied
     ));
 
     if outcome.findings.is_empty() {
@@ -318,12 +328,19 @@ pub fn render_terminal_with_color(outcome: &ScanOutcome, color: TerminalColor) -
                 suppressed.finding.rule_id,
                 suppressed.finding.location.display_label()
             ));
-            out.push_str(&format!(
-                "           suppressed by {}:{} (`ignore {}`)\n",
-                display_suppression_file(&suppressed.suppression.file),
-                suppressed.suppression.line,
-                suppressed.suppression.rules
-            ));
+            match suppressed.suppression.source {
+                SuppressionSource::Config => out.push_str(&format!(
+                    "           suppressed by configuration path `{}` (`rule {}`)\n",
+                    suppressed.suppression.path.as_deref().unwrap_or("?"),
+                    suppressed.suppression.rules
+                )),
+                SuppressionSource::Inline => out.push_str(&format!(
+                    "           suppressed by {}:{} (`ignore {}`)\n",
+                    display_suppression_file(&suppressed.suppression.file),
+                    suppressed.suppression.line,
+                    suppressed.suppression.rules
+                )),
+            }
             out.push_str(&format!(
                 "           reason: {}\n",
                 suppressed
@@ -406,6 +423,7 @@ struct JsonReport<'a> {
     findings: &'a [Finding],
     suppressed: &'a [SuppressedFinding],
     suppressions: Vec<SuppressionJson>,
+    config_suppressions: &'a [ConfigSuppressionReport],
     diagnostics: &'a [Diagnostic],
     /// Present only when the caller bounded the number of reported findings.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -442,6 +460,12 @@ struct StatsSummary {
     findings_rejected: usize,
     suppressions_detected: usize,
     findings_suppressed: usize,
+    findings_suppressed_by_config: usize,
+    config_suppressions_detected: usize,
+    config_suppressions_matched: usize,
+    config_suppressions_applied: usize,
+    generated_files_marked: usize,
+    generated_files_excluded: usize,
 }
 
 /// A detected suppression directive in JSON reports.
@@ -509,11 +533,18 @@ pub fn render_json(outcome: &ScanOutcome) -> Result<String, serde_json::Error> {
             findings_rejected: outcome.stats.findings_rejected,
             suppressions_detected: outcome.stats.suppressions_detected,
             findings_suppressed: outcome.stats.findings_suppressed,
+            findings_suppressed_by_config: outcome.stats.findings_suppressed_by_config,
+            config_suppressions_detected: outcome.stats.config_suppressions_detected,
+            config_suppressions_matched: outcome.stats.config_suppressions_matched,
+            config_suppressions_applied: outcome.stats.config_suppressions_applied,
+            generated_files_marked: outcome.stats.generated_files_marked,
+            generated_files_excluded: outcome.stats.generated_files_excluded,
         },
         effective_config: &outcome.config,
         findings: &outcome.findings,
         suppressed: &outcome.suppressed,
         suppressions: suppression_reports(outcome),
+        config_suppressions: &outcome.config_suppressions,
         diagnostics: &outcome.diagnostics,
         truncation: outcome.truncation,
     };
@@ -648,19 +679,34 @@ fn sarif_result(finding: &Finding, suppression: Option<&SuppressionInfo>) -> ser
     });
 
     if let Some(suppression) = suppression {
+        let (kind, suppressed_by, default_reason) = match suppression.source {
+            SuppressionSource::Config => (
+                "external",
+                format!("config:{}", suppression.path.as_deref().unwrap_or_default()),
+                "configuration suppression",
+            ),
+            SuppressionSource::Inline => (
+                "inSource",
+                format!("{}:{}", suppression.file, suppression.line),
+                "inline soroban-scan suppression",
+            ),
+        };
         let justification = suppression
             .reason
             .clone()
-            .unwrap_or_else(|| "inline soroban-scan suppression".to_string());
+            .unwrap_or_else(|| default_reason.to_string());
         result["suppressions"] = json!([{
-            "kind": "inSource",
+            "kind": kind,
             "status": "accepted",
             "justification": justification,
         }]);
         result["properties"]["suppressed"] = json!(true);
-        result["properties"]["suppressedBy"] =
-            json!(format!("{}:{}", suppression.file, suppression.line));
+        result["properties"]["suppressedBy"] = json!(suppressed_by);
         result["properties"]["suppressedRules"] = json!(suppression.rules);
+        result["properties"]["suppressionSource"] = match suppression.source {
+            SuppressionSource::Config => json!("config"),
+            SuppressionSource::Inline => json!("inline"),
+        };
     }
 
     result
@@ -759,8 +805,23 @@ pub fn render_markdown(outcome: &ScanOutcome) -> String {
     ));
     out.push_str(&format!("- **Findings:** {}\n\n", outcome.findings.len()));
     out.push_str(&format!(
-        "- **Suppressed (excluded from the gate):** {}\n\n",
-        outcome.stats.findings_suppressed
+        "- **Suppressed (excluded from the gate):** {} ({} inline, {} by configuration)\n",
+        outcome.stats.findings_suppressed,
+        outcome
+            .stats
+            .findings_suppressed
+            .saturating_sub(outcome.stats.findings_suppressed_by_config),
+        outcome.stats.findings_suppressed_by_config
+    ));
+    out.push_str(&format!(
+        "- **Generated code:** {} marked, {} excluded\n",
+        outcome.stats.generated_files_marked, outcome.stats.generated_files_excluded
+    ));
+    out.push_str(&format!(
+        "- **Configured suppressions:** {} detected, {} matched, {} applied\n\n",
+        outcome.stats.config_suppressions_detected,
+        outcome.stats.config_suppressions_matched,
+        outcome.stats.config_suppressions_applied
     ));
 
     out.push_str("## Summary\n\n");
@@ -852,14 +913,25 @@ fn append_markdown_suppressed(outcome: &ScanOutcome, out: &mut String) {
     out.push_str("\n## Suppressed findings\n\n");
     out.push_str("Suppressed findings are excluded from the gate and always reported:\n\n");
     for suppressed in &outcome.suppressed {
+        let by = match suppressed.suppression.source {
+            SuppressionSource::Config => format!(
+                "configuration path `{}` (`rule {}`)",
+                suppressed.suppression.path.as_deref().unwrap_or("?"),
+                suppressed.suppression.rules
+            ),
+            SuppressionSource::Inline => format!(
+                "`{}:{}` (`ignore {}`)",
+                display_suppression_file(&suppressed.suppression.file),
+                suppressed.suppression.line,
+                suppressed.suppression.rules
+            ),
+        };
         out.push_str(&format!(
-            "- **{}** `{}` at `{}` — suppressed by `{}:{}` (`ignore {}`)\n",
+            "- **{}** `{}` at `{}` — suppressed by {}\n",
             suppressed.finding.rule_id,
             suppressed.finding.title,
             suppressed.finding.location.display_label(),
-            display_suppression_file(&suppressed.suppression.file),
-            suppressed.suppression.line,
-            suppressed.suppression.rules
+            by
         ));
         out.push_str(&format!(
             "  - Reason: {}\n",
@@ -869,6 +941,23 @@ fn append_markdown_suppressed(outcome: &ScanOutcome, out: &mut String) {
                 .as_deref()
                 .unwrap_or("(none given)")
         ));
+    }
+
+    if !outcome.config_suppressions.is_empty() {
+        out.push_str("\n### Configured suppressions\n\n");
+        out.push_str("| Path | Rule | Matched | Suppressed | Applied | Reason |\n");
+        out.push_str("| ---- | ---- | ------- | ---------- | ------- | ------ |\n");
+        for suppression in &outcome.config_suppressions {
+            out.push_str(&format!(
+                "| `{}` | {} | {} | {} | {} | {} |\n",
+                suppression.path,
+                suppression.rule,
+                suppression.matched,
+                suppression.findings_suppressed,
+                suppression.applied,
+                suppression.reason.as_deref().unwrap_or("")
+            ));
+        }
     }
 }
 
@@ -1620,6 +1709,77 @@ mod tests {
         let text = render_markdown(&outcome);
         assert!(text.contains("## Suppressed findings"));
         assert!(text.contains("reviewed by the security team"));
+    }
+
+    fn config_suppressed_sample() -> (ScanOutcome, RuleRegistry) {
+        let src = "fn a() {}\n";
+        let mut registry = RuleRegistry::new();
+        let meta = crate::rule::RuleMetadata::new(
+            "SS-001",
+            "Configured rule",
+            "fixture rule",
+            crate::category::Category::Authorization,
+            Severity::High,
+            crate::confidence::Confidence::High,
+            "fix it",
+        );
+        registry
+            .register(Box::new(FixedLineRule { meta, line: 1 }))
+            .unwrap();
+        let config = ScanConfig {
+            suppressions: vec![crate::config::SuppressionRule {
+                path: "src/**".to_string(),
+                rule: "SS-001".to_string(),
+                reason: Some("accepted by configuration".to_string()),
+            }],
+            ..ScanConfig::default()
+        };
+        let outcome = engine::scan_source_str(src, "src/lib.rs", &config, &registry);
+        (outcome, registry)
+    }
+
+    #[test]
+    fn json_report_exposes_configured_suppressions_and_counts() {
+        let (outcome, _) = config_suppressed_sample();
+        let value: serde_json::Value =
+            serde_json::from_str(&render_json(&outcome).unwrap()).unwrap();
+
+        assert_eq!(value["stats"]["config_suppressions_detected"], 1);
+        assert_eq!(value["stats"]["config_suppressions_matched"], 1);
+        assert_eq!(value["stats"]["config_suppressions_applied"], 1);
+        assert_eq!(value["stats"]["findings_suppressed_by_config"], 1);
+        assert_eq!(value["config_suppressions"][0]["path"], "src/**");
+        assert_eq!(value["config_suppressions"][0]["rule"], "SS-001");
+        assert_eq!(value["config_suppressions"][0]["matched"], 1);
+        assert_eq!(value["config_suppressions"][0]["applied"], true);
+        assert_eq!(value["suppressed"][0]["suppression"]["source"], "config");
+        assert_eq!(value["suppressed"][0]["suppression"]["path"], "src/**");
+    }
+
+    #[test]
+    fn sarif_marks_configured_suppressions_as_external() {
+        let (outcome, registry) = config_suppressed_sample();
+        let value: serde_json::Value =
+            serde_json::from_str(&render_sarif(&outcome, &registry)).unwrap();
+        let result = &value["runs"][0]["results"][0];
+        assert_eq!(result["suppressions"][0]["kind"], "external");
+        assert_eq!(result["properties"]["suppressedBy"], "config:src/**");
+        assert_eq!(result["properties"]["suppressionSource"], "config");
+    }
+
+    #[test]
+    fn terminal_and_markdown_report_configured_suppressions() {
+        let (outcome, _) = config_suppressed_sample();
+        let terminal = render_terminal(&outcome);
+        assert!(terminal.contains(
+            "Generated: 0 marked, 0 excluded  Config suppressions: 1 detected, 1 applied"
+        ));
+        assert!(terminal.contains("configuration path `src/**`"));
+        assert!(terminal.contains("accepted by configuration"));
+
+        let markdown = render_markdown(&outcome);
+        assert!(markdown.contains("### Configured suppressions"));
+        assert!(markdown.contains("| `src/**` | SS-001 | 1 | 1 | true |"));
     }
 
     #[test]

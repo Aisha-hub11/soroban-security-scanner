@@ -4,7 +4,9 @@
 //! here can enable code execution or network access.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
+use globset::Glob;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ai::AiConfig;
@@ -88,6 +90,78 @@ impl RulesConfig {
     }
 }
 
+/// Literal that matches every rule in a configured suppression.
+pub const ALL_SUPPRESSION_RULES: &str = "all";
+
+/// Returns true when `token` is a valid `SS-###` rule id.
+pub fn is_valid_rule_id(token: &str) -> bool {
+    let token = token.trim();
+    token.len() == 6
+        && token
+            .get(..3)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SS-"))
+        && token[3..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// A path- and rule-scoped suppression from configuration.
+///
+/// Suppressions are auditable: every entry is reported, including entries that
+/// match no finding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SuppressionRule {
+    /// Relative glob matched against root-relative finding paths.
+    pub path: String,
+    /// Rule id to suppress, or `all`.
+    pub rule: String,
+    /// Optional audit reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl SuppressionRule {
+    /// Validates the path and rule.
+    pub fn validate(&self) -> Result<(), String> {
+        let path = self.path.trim();
+        if path.is_empty() {
+            return Err("path must not be empty".to_string());
+        }
+        if path.starts_with('/') || path.starts_with('\\') || Path::new(path).is_absolute() {
+            return Err("path must be relative".to_string());
+        }
+        if path.split(['/', '\\']).any(|component| component == "..") {
+            return Err("path must not contain '..'".to_string());
+        }
+        Glob::new(path).map_err(|error| format!("path is not a valid glob: {error}"))?;
+
+        let rule = self.rule.trim();
+        if rule.is_empty() {
+            return Err("rule must not be empty".to_string());
+        }
+        if !rule.eq_ignore_ascii_case(ALL_SUPPRESSION_RULES) && !is_valid_rule_id(rule) {
+            return Err(format!(
+                "rule must be 'all' or a rule id such as 'SS-001', got '{rule}'"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns true when this entry's rule covers `rule_id`.
+    pub fn matches_rule(&self, rule_id: &str) -> bool {
+        self.rule.eq_ignore_ascii_case(ALL_SUPPRESSION_RULES)
+            || self.rule.trim().eq_ignore_ascii_case(rule_id)
+    }
+
+    /// Stable rule label used in reports.
+    pub fn rule_label(&self) -> String {
+        if self.rule.eq_ignore_ascii_case(ALL_SUPPRESSION_RULES) {
+            ALL_SUPPRESSION_RULES.to_string()
+        } else {
+            self.rule.trim().to_ascii_uppercase()
+        }
+    }
+}
+
 /// Complete scan configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -100,10 +174,14 @@ pub struct ScanConfig {
     pub exclude: Vec<String>,
     /// Skip items gated behind `#[cfg(test)]` and test directories.
     pub exclude_tests: bool,
+    /// Exclude files carrying generated-code markers instead of marking them.
+    pub exclude_generated: bool,
     /// Whether to follow symbolic links during discovery.
     pub follow_symlinks: bool,
     /// Minimum supported `soroban-sdk` version for the SS-015 policy check.
     pub minimum_soroban_sdk: String,
+    /// Path- and rule-scoped suppressions.
+    pub suppressions: Vec<SuppressionRule>,
     /// Rule selection and overrides.
     pub rules: RulesConfig,
     /// Optional assistance layer configuration (disabled by default).
@@ -117,8 +195,10 @@ impl Default for ScanConfig {
             min_confidence: Confidence::Low,
             exclude: Vec::new(),
             exclude_tests: false,
+            exclude_generated: false,
             follow_symlinks: false,
             minimum_soroban_sdk: "21.0.0".to_string(),
+            suppressions: Vec::new(),
             rules: RulesConfig::default(),
             ai: AiConfig::default(),
         }
@@ -132,18 +212,30 @@ impl ScanConfig {
             follow_symlinks: self.follow_symlinks,
             exclude: self.exclude.clone(),
             exclude_tests: self.exclude_tests,
+            exclude_generated: self.exclude_generated,
         }
     }
 
-    /// Parses a configuration from TOML text.
+    /// Validates configured suppressions.
+    pub fn validate(&self) -> Result<(), crate::error::ScanError> {
+        for (index, suppression) in self.suppressions.iter().enumerate() {
+            suppression.validate().map_err(|error| {
+                crate::error::ScanError::Config(format!("invalid suppressions[{index}]: {error}"))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Parses and validates a configuration from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, crate::error::ScanError> {
-        text.parse::<toml::Value>()
-            .map_err(|e| crate::error::ScanError::Config(format!("invalid config TOML: {e}")))
-            .and_then(|value| {
-                value
-                    .try_into()
-                    .map_err(|e| crate::error::ScanError::Config(format!("invalid config: {e}")))
-            })
+        let value = text
+            .parse::<toml::Value>()
+            .map_err(|e| crate::error::ScanError::Config(format!("invalid config TOML: {e}")))?;
+        let config: Self = value
+            .try_into()
+            .map_err(|e| crate::error::ScanError::Config(format!("invalid config: {e}")))?;
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -269,5 +361,101 @@ disabled_categories = ["nonsense"]
     fn rejects_unknown_fields() {
         let err = ScanConfig::from_toml("mystery = true").unwrap_err();
         assert!(matches!(err, crate::error::ScanError::Config(_)));
+    }
+
+    #[test]
+    fn parses_suppression_array_of_tables() {
+        let config = ScanConfig::from_toml(
+            r#"
+exclude_generated = true
+
+[[suppressions]]
+path = "src/generated/**"
+rule = "all"
+reason = "generated by the SDK"
+
+[[suppressions]]
+path = "tests/**"
+rule = "SS-001"
+
+[rules]
+disabled = ["SS-010"]
+"#,
+        )
+        .unwrap();
+
+        assert!(config.exclude_generated);
+        assert_eq!(config.suppressions.len(), 2);
+        let first = &config.suppressions[0];
+        assert_eq!(first.path, "src/generated/**");
+        assert_eq!(first.rule, "all");
+        assert_eq!(first.reason.as_deref(), Some("generated by the SDK"));
+        assert!(first.matches_rule("SS-029"));
+        let second = &config.suppressions[1];
+        assert_eq!(second.rule, "SS-001");
+        assert_eq!(second.reason, None);
+        assert!(second.matches_rule("ss-001"));
+        assert!(!second.matches_rule("SS-002"));
+    }
+
+    #[test]
+    fn validates_suppression_paths_and_rules() {
+        let invalid = [
+            r#"[[suppressions]]
+path = ""
+rule = "SS-001"
+"#,
+            r#"[[suppressions]]
+path = "/absolute/**"
+rule = "SS-001"
+"#,
+            r#"[[suppressions]]
+path = "../outside/**"
+rule = "SS-001"
+"#,
+            r#"[[suppressions]]
+path = "src/["
+rule = "SS-001"
+"#,
+            r#"[[suppressions]]
+path = "src/**"
+rule = "SS-1"
+"#,
+            r#"[[suppressions]]
+path = "src/**"
+rule = ""
+"#,
+        ];
+        for text in invalid {
+            let err = ScanConfig::from_toml(text).unwrap_err();
+            assert!(matches!(err, crate::error::ScanError::Config(_)));
+            assert!(
+                err.to_string().contains("suppressions"),
+                "unexpected error for {text:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_loaded_suppressions_directly() {
+        let mut config = ScanConfig::default();
+        config.suppressions.push(SuppressionRule {
+            path: "src/generated/**".to_string(),
+            rule: "all".to_string(),
+            reason: None,
+        });
+        assert!(config.validate().is_ok());
+
+        config.suppressions[0].path = "../escape/**".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn discovery_options_carry_generated_exclusion() {
+        let config = ScanConfig {
+            exclude_generated: true,
+            ..ScanConfig::default()
+        };
+        assert!(config.discovery_options().exclude_generated);
     }
 }

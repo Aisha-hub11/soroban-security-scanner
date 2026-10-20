@@ -34,6 +34,8 @@ pub struct DiscoveryOptions {
     pub exclude: Vec<String>,
     /// Skip test directories (any directory named `tests`).
     pub exclude_tests: bool,
+    /// Exclude source files marked as generated instead of marking them.
+    pub exclude_generated: bool,
 }
 
 /// Files discovered during a scan.
@@ -196,6 +198,7 @@ mod tests {
             follow_symlinks: false,
             exclude: vec!["tests/**".to_string()],
             exclude_tests: false,
+            exclude_generated: false,
         };
         let found = discover(&root, &opts).unwrap();
         assert_eq!(found.rust_files.len(), 1);
@@ -228,6 +231,7 @@ mod tests {
             follow_symlinks: false,
             exclude: vec!["[".to_string()],
             exclude_tests: false,
+            exclude_generated: false,
         };
         assert!(matches!(discover(&root, &opts), Err(ScanError::Config(_))));
         let _ = std::fs::remove_dir_all(&root);
