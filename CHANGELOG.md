@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Baseline parsing now fails closed on empty, truncated, or corrupted JSON/TOML,
+  with the file path and parser position in the error. A truncated baseline
+  exits `3` instead of being treated as empty.
+
 ### Added
 
 - Add `.github/CODEOWNERS` for the rule engine, security-sensitive core

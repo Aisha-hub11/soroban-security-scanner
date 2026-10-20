@@ -97,8 +97,22 @@ impl Baseline {
 
     /// Parses a baseline from JSON.
     pub fn from_json(text: &str) -> Result<Self, ScanError> {
-        let baseline: Baseline = serde_json::from_str(text)
-            .map_err(|e| ScanError::Baseline(format!("invalid baseline JSON: {e}")))?;
+        if text.trim().is_empty() {
+            return Err(ScanError::Baseline(
+                "baseline JSON is empty; refusing to treat an empty file as a baseline".to_string(),
+            ));
+        }
+        let baseline: Baseline = serde_json::from_str(text).map_err(|error| {
+            let position = format!("line {}, column {}", error.line(), error.column());
+            if error.is_eof() {
+                ScanError::Baseline(format!(
+                    "truncated baseline JSON at {position}: unexpected end of input; \
+                     the file may have been partially written or interrupted"
+                ))
+            } else {
+                ScanError::Baseline(format!("invalid baseline JSON at {position}: {error}"))
+            }
+        })?;
         baseline.validate_version()?;
         Ok(baseline)
     }
@@ -113,8 +127,23 @@ impl Baseline {
 
     /// Parses a baseline from TOML.
     pub fn from_toml(text: &str) -> Result<Self, ScanError> {
-        let baseline: Baseline = toml::from_str(text)
-            .map_err(|e| ScanError::Baseline(format!("invalid baseline TOML: {e}")))?;
+        if text.trim().is_empty() {
+            return Err(ScanError::Baseline(
+                "baseline TOML is empty; refusing to treat an empty file as a baseline".to_string(),
+            ));
+        }
+        let baseline: Baseline = toml::from_str(text).map_err(|error| {
+            let message = error.to_string();
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("unexpected end") || lower.contains("eof") {
+                ScanError::Baseline(format!(
+                    "truncated baseline TOML: {message}; \
+                     the file may have been partially written or interrupted"
+                ))
+            } else {
+                ScanError::Baseline(format!("invalid baseline TOML: {message}"))
+            }
+        })?;
         baseline.validate_version()?;
         Ok(baseline)
     }
@@ -438,5 +467,47 @@ mod tests {
         let first = Baseline::from_findings(&findings).to_json().unwrap();
         let second = Baseline::from_findings(&findings).to_json().unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn truncated_json_is_rejected_with_position_and_truncation_hint() {
+        let truncated = r#"{
+  "version": 1,
+  "tool": "soroban-scan",
+  "tool_version": "0.2.0",
+  "findings": [
+    {"fingerprint": "abc""#;
+        let error = Baseline::from_json(truncated).unwrap_err().to_string();
+
+        assert!(error.contains("truncated baseline JSON"), "got: {error}");
+        assert!(error.contains("line"), "got: {error}");
+        assert!(error.contains("column"), "got: {error}");
+        assert!(
+            error.contains("partially written") || error.contains("interrupted"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn empty_baselines_are_rejected_not_treated_as_empty_baselines() {
+        for (label, error) in [
+            (
+                "json",
+                Baseline::from_json(" \n\t").unwrap_err().to_string(),
+            ),
+            ("toml", Baseline::from_toml("").unwrap_err().to_string()),
+        ] {
+            assert!(
+                error.contains("empty"),
+                "{label} baseline must be rejected as empty: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn truncated_toml_is_rejected_clearly() {
+        let truncated = "version = 1\ntool = \"soroban-scan\"\nfindings = [\n";
+        let error = Baseline::from_toml(truncated).unwrap_err().to_string();
+        assert!(error.contains("baseline TOML"), "got: {error}");
     }
 }
