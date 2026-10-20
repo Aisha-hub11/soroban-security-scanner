@@ -268,6 +268,19 @@ fn rules_lists_built_in_rules() {
 }
 
 #[test]
+fn rules_markdown_format_matches_the_docs_table() {
+    let out = run(&["rules", "--format", "markdown"]);
+    assert_eq!(out.code, 0);
+    assert!(out
+        .stdout
+        .starts_with("| Rule | Title | Severity | Confidence | Category |\n"));
+    assert!(out
+        .stdout
+        .contains("| ---- | ----- | -------- | ---------- | -------- |\n"));
+    assert!(out.stdout.contains("| [SS-001](detectors/SS-001.md) |"));
+}
+
+#[test]
 fn explain_known_rule_succeeds() {
     let out = run(&["explain", "SS-001"]);
     assert_eq!(out.code, 0);
@@ -399,6 +412,49 @@ fn init_creates_then_refuses_to_overwrite() {
 
     let second = run(&["init", dir.to_str().unwrap()]);
     assert_eq!(second.code, 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_interactive_reads_scripted_answers_and_respects_force() {
+    let dir = std::env::temp_dir().join(format!(
+        "soroban-scan-cli-init-interactive-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let out = run_with_stdin(
+        &["init", dir.to_str().unwrap(), "--interactive"],
+        "medium\nstorage, authorization\nvendor/**, target/**\n",
+    );
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+
+    let config_path = dir.join("soroban-scan.toml");
+    let text = std::fs::read_to_string(&config_path).unwrap();
+    assert!(text.contains("min_severity = \"medium\""), "got: {text}");
+    assert!(text.contains("\"storage\""), "got: {text}");
+    assert!(text.contains("\"authorization\""), "got: {text}");
+    assert!(text.contains("\"vendor/**\""), "got: {text}");
+    assert!(text.contains("\"target/**\""), "got: {text}");
+
+    let validate = run(&[
+        "config",
+        "validate",
+        "--config",
+        config_path.to_str().unwrap(),
+    ]);
+    assert_eq!(validate.code, 0, "stderr: {}", validate.stderr);
+
+    let overwrite = run_with_stdin(
+        &["init", dir.to_str().unwrap(), "--interactive", "--force"],
+        "critical\n\nexamples/**\n",
+    );
+    assert_eq!(overwrite.code, 0, "stderr: {}", overwrite.stderr);
+    let text = std::fs::read_to_string(&config_path).unwrap();
+    assert!(text.contains("min_severity = \"critical\""), "got: {text}");
+    assert!(text.contains("\"examples/**\""), "got: {text}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

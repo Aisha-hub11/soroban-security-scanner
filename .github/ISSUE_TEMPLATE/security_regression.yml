@@ -1,0 +1,68 @@
+name: Security regression
+description: Report a missed detection or a false positive so it can become a fixture
+title: "[Regression]: "
+labels: ["security", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for **missed detections** and **false positives** in a
+        scanner rule. Include a minimal, self-contained snippet so the report can
+        become a regression fixture.
+
+        Do **not** report an undisclosed vulnerability here. Follow
+        [SECURITY.md](https://github.com/StellarFoundry/soroban-security-scanner/blob/main/SECURITY.md)
+        and use private reporting for security vulnerabilities.
+  - type: input
+    id: rule-id
+    attributes:
+      label: Rule id
+      description: The rule involved, for example SS-001.
+      placeholder: SS-001
+    validations:
+      required: true
+  - type: textarea
+    id: minimal-source
+    attributes:
+      label: Minimal source
+      description: The smallest Rust/Soroban snippet that reproduces the result.
+      render: rust
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should the scanner report, or not report?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What does the scanner report today? Include the relevant output.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: sdk-version
+    attributes:
+      label: soroban-sdk version
+      description: The version of soroban-sdk used by the snippet.
+      placeholder: 21.7.7
+    validations:
+      required: true
+  - type: input
+    id: scanner-version
+    attributes:
+      label: Scanner version
+      description: Output of `soroban-scan version`.
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Related fixtures, links, or notes.
+    validations:
+      required: false

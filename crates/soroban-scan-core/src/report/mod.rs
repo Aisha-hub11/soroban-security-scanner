@@ -3,6 +3,8 @@
 //! Machine-readable formats are stable and versioned by the tool version. No
 //! renderer ever emits environment variables, absolute user paths, or secrets.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use crate::config::ScanConfig;
@@ -92,6 +94,31 @@ fn severity_counts(findings: &[Finding]) -> [usize; 5] {
         counts[finding.severity.rank() as usize] += 1;
     }
     counts
+}
+
+/// Counts findings per rule, sorted by descending count and then rule id.
+fn rule_counts(findings: &[Finding]) -> Vec<(String, usize)> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for finding in findings {
+        *counts.entry(finding.rule_id.as_str()).or_insert(0) += 1;
+    }
+    let mut rows: Vec<(String, usize)> = counts
+        .into_iter()
+        .map(|(id, count)| (id.to_string(), count))
+        .collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows
+}
+
+/// Counts findings per category, sorted by descending count and then name.
+fn category_counts(findings: &[Finding]) -> Vec<(&'static str, usize)> {
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for finding in findings {
+        *counts.entry(finding.category.as_str()).or_insert(0) += 1;
+    }
+    let mut rows: Vec<(&'static str, usize)> = counts.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    rows
 }
 
 /// Renders a concise human-readable summary line.
@@ -672,6 +699,22 @@ pub fn render_markdown(outcome: &ScanOutcome) -> String {
     }
     out.push('\n');
 
+    if !outcome.findings.is_empty() {
+        out.push_str("## Top rules\n\n");
+        out.push_str("| Rule | Count |\n| ---- | ----- |\n");
+        for (rule, count) in rule_counts(&outcome.findings) {
+            out.push_str(&format!("| {rule} | {count} |\n"));
+        }
+        out.push('\n');
+
+        out.push_str("## Categories\n\n");
+        out.push_str("| Category | Count |\n| -------- | ----- |\n");
+        for (category, count) in category_counts(&outcome.findings) {
+            out.push_str(&format!("| {category} | {count} |\n"));
+        }
+        out.push('\n');
+    }
+
     if outcome.findings.is_empty() {
         if outcome.truncation.is_none() {
             out.push_str("No security findings.\n");
@@ -765,6 +808,23 @@ pub fn render_rule_list(metas: &[&RuleMetadata], format: OutputFormat) -> String
                 })
                 .collect();
             serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string())
+        }
+        OutputFormat::Markdown => {
+            let mut out = String::new();
+            out.push_str("| Rule | Title | Severity | Confidence | Category |\n");
+            out.push_str("| ---- | ----- | -------- | ---------- | -------- |\n");
+            for meta in metas {
+                out.push_str(&format!(
+                    "| [{}](detectors/{}.md) | {} | {} | {} | {} |\n",
+                    meta.id,
+                    meta.id,
+                    meta.title,
+                    meta.default_severity,
+                    meta.default_confidence,
+                    meta.category
+                ));
+            }
+            out
         }
         _ => {
             let mut out = String::new();
@@ -980,6 +1040,73 @@ mod tests {
         let text = render_markdown(&outcome);
         assert!(text.contains("| Severity | Count |"));
         assert!(text.contains("SS-001"));
+    }
+
+    #[test]
+    fn markdown_report_includes_top_rules_and_categories() {
+        let (outcome, _) = sample();
+        let text = render_markdown(&outcome);
+        assert!(text.contains("## Top rules"));
+        assert!(text.contains("| Rule | Count |"));
+        assert!(text.contains("## Categories"));
+        assert!(text.contains("| Category | Count |"));
+        assert!(text.contains("| SS-001 |"));
+    }
+
+    fn synthetic_finding(rule: &'static str, category: crate::category::Category) -> Finding {
+        let meta = crate::rule::RuleMetadata::new(
+            rule,
+            "Title",
+            "Description",
+            category,
+            Severity::Low,
+            Confidence::Low,
+            "Remediation",
+        );
+        Finding::new(
+            &meta,
+            crate::finding::SourceLocation::new("src/lib.rs", 1),
+            "evidence",
+        )
+    }
+
+    #[test]
+    fn markdown_summary_counts_sort_by_count_then_id() {
+        use crate::category::Category;
+
+        let findings = vec![
+            synthetic_finding("SS-002", Category::Storage),
+            synthetic_finding("SS-001", Category::Authorization),
+            synthetic_finding("SS-002", Category::Authorization),
+            synthetic_finding("SS-001", Category::Authorization),
+            synthetic_finding("SS-003", Category::Storage),
+        ];
+
+        assert_eq!(
+            rule_counts(&findings),
+            vec![
+                ("SS-001".to_string(), 2),
+                ("SS-002".to_string(), 2),
+                ("SS-003".to_string(), 1),
+            ]
+        );
+        assert_eq!(
+            category_counts(&findings),
+            vec![("authorization", 3), ("storage", 2)]
+        );
+    }
+
+    #[test]
+    fn rules_markdown_uses_the_docs_table_format() {
+        let registry = RuleRegistry::with_default_rules();
+        let text = render_rule_list(&registry.metadata_sorted(), OutputFormat::Markdown);
+        assert!(text.starts_with(
+            "| Rule | Title | Severity | Confidence | Category |\n\
+             | ---- | ----- | -------- | ---------- | -------- |\n"
+        ));
+        assert!(text.contains(
+            "| [SS-001](detectors/SS-001.md) | State-changing entry point without caller authorization | high | medium | authorization |"
+        ));
     }
 
     #[test]

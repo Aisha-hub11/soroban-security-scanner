@@ -15,6 +15,14 @@ Generate a starter file:
 soroban-scan init
 ```
 
+Use `--interactive` to answer a few questions about minimum severity, enabled
+categories, and exclude globs; the wizard then writes a valid configuration
+file. Piped input is supported for scripted setup.
+
+```bash
+soroban-scan init --interactive
+```
+
 Inspect the effective configuration and validate it:
 
 ```bash

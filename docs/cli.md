@@ -215,11 +215,17 @@ semantics, and incremental scanning.
 ## `rules`
 
 ```text
-soroban-scan rules [--format terminal|json] [--category CATEGORY] [--min-severity LEVEL] [--search TEXT]
+soroban-scan rules [--format terminal|json|markdown] [--category CATEGORY] [--min-severity LEVEL] [--search TEXT]
 ```
 
 Lists the rule catalog. `--search` matches case-insensitively against rule id,
-title, description, and category.
+title, description, and category. `--format markdown` emits the same table used
+in [`rules/README.md`](rules/README.md), so the docs table can be regenerated
+instead of maintained by hand:
+
+```bash
+soroban-scan rules --format markdown
+```
 
 ## `explain`
 
@@ -232,10 +238,16 @@ Prints a rule's description, defaults, remediation, and references.
 ## `init`
 
 ```text
-soroban-scan init [PATH] [--force]
+soroban-scan init [PATH] [--force] [--interactive]
 ```
 
 Writes `soroban-scan.toml`. Refuses to overwrite unless `--force` is given.
+
+With `--interactive`, the wizard asks for the minimum severity, the categories
+to enable, and exclude globs, then writes only the answers plus the safe
+defaults. Prompts are shown only when stdin is a terminal; piped input is still
+read, so the flow can be scripted. Without `--interactive`, the documented
+starter template is written unchanged.
 
 ## `config`
 
@@ -285,7 +297,9 @@ network access.
   settings used for the scan, excluding environment data and secrets. When
   `--max-findings` omits findings, a `truncation` object reports the counts.
 - **sarif** — SARIF 2.1.0 for GitHub code scanning and compatible tools.
-- **markdown** — report suitable for pull requests and documentation.
+- **markdown** — report suitable for pull requests and documentation. The
+  summary includes a severity table, the most frequent rule ids, and the
+  categories with the most findings, each sorted deterministically.
 - **github** — GitHub Actions workflow-command annotations (`::error`,
   `::warning`, `::notice`) with escaped paths, titles, and evidence.
 
