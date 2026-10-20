@@ -50,6 +50,26 @@ requested runs. It uses only the Python standard library. Compare before/after o
 the same machine, the same target and the same profile, and always benchmark a
 `--release` build.
 
+## CI regression threshold
+
+The `Benchmark regression` CI job runs the CLI benchmark on `ubuntu-latest` and
+compares the median against the committed
+[`tools/benchmark_baseline.json`](../../tools/benchmark_baseline.json). It fails
+only when the median is worse than `baseline_median_ms * threshold_factor`
+(currently a wide 6x margin), which catches accidental quadratic behaviour
+without failing on normal runner variance. The job is ubuntu-only; timings from
+other operating systems are not comparable.
+
+To refresh the baseline after an intentional performance change, run the same
+command on the same runner type and commit the result:
+
+```bash
+python tools/benchmark.py --update-baseline
+```
+
+The measurement and comparison logic is covered by
+`tests/tools/test_benchmark_threshold.py`.
+
 ## Pathological-input regression
 
 `crates/soroban-scan-core/tests/performance.rs` asserts generous upper time

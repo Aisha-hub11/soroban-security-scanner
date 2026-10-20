@@ -17,6 +17,7 @@ use soroban_scan_core::category::Category;
 use soroban_scan_core::confidence::Confidence;
 use soroban_scan_core::config::ScanConfig;
 use soroban_scan_core::engine;
+use soroban_scan_core::model::DiagnosticCode;
 use soroban_scan_core::project;
 use soroban_scan_core::registry::RuleRegistry;
 use soroban_scan_core::report::{self, OutputFormat};
@@ -88,6 +89,12 @@ enabled = []
 enabled = false
 # provider = "none"
 # model = "none"
+# Bounded request budget for one scan. Set to 0 to disable assistant calls.
+# max_requests = 50
+# Maximum retries per request and exponential backoff (milliseconds).
+# max_retries = 2
+# backoff_ms = 250
+# max_backoff_ms = 4000
 "#;
 
 /// Argument value for `--format`.
@@ -333,6 +340,11 @@ struct ScanArgs {
     /// Include diagnostics in the report.
     #[arg(long, short = 'v')]
     verbose: bool,
+
+    /// Print per-rule elapsed time to stderr. Never appears in machine formats
+    /// and never changes findings, ordering, fingerprints or the exit gate.
+    #[arg(long)]
+    timings: bool,
 
     /// Page long terminal reports through `$PAGER` (never affects JSON, SARIF,
     /// Markdown, or GitHub annotations).
@@ -701,6 +713,21 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
         }
     }
 
+    if args.timings {
+        // Sorted by rule id so the stderr stream is stable across registry
+        // iteration and multi-root merges. Timing is presentation-only.
+        let mut timings = outcome.rule_timings.clone();
+        timings.sort_by(|a, b| a.rule_id.cmp(&b.rule_id));
+        for timing in timings {
+            eprintln!(
+                "timing: {} {:.3} ms ({})",
+                timing.rule_id,
+                timing.elapsed_ms(),
+                timing.status.as_str()
+            );
+        }
+    }
+
     if args.guidance {
         let base = ai::assistant(&config.ai).map_err(|e| {
             CliError::Usage(format!("assistance is unavailable: {e} (see docs/ai.md)"))
@@ -719,12 +746,23 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
             ai::AssistanceCache::new(assistance_cache_root(&scan_root), ai::DEFAULT_MAX_ENTRIES);
         let assistant = ai::CachedAssistant::new(base, cache, provider, model);
 
-        let explanation = assistant.summarize(&outcome.findings);
-        eprintln!("{}", explanation.render());
+        let mut session = ai::GuidanceSession::new(&assistant, &config.ai);
+        if let Some(explanation) = session.summarize(&outcome.findings) {
+            eprintln!("{}", explanation.render());
+        }
         for finding in &outcome.findings {
             let rule = registry.by_id(&finding.rule_id).map(|rule| rule.metadata());
-            let explanation = assistant.explain_finding(finding, rule);
-            eprintln!("{}", explanation.render());
+            if let Some(explanation) = session.explain_finding(finding, rule) {
+                eprintln!("{}", explanation.render());
+            }
+        }
+        if session.exhausted() {
+            eprintln!(
+                "diagnostic: [{}] assistance request budget exhausted after {} request(s); \
+                 continuing without further AI calls",
+                DiagnosticCode::AiRequestBudgetExhausted,
+                session.requests_used()
+            );
         }
     }
 

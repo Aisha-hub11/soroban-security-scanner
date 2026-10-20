@@ -63,6 +63,50 @@ pub struct ScanStats {
     pub generated_files_excluded: usize,
 }
 
+/// Outcome of one rule execution for the opt-in timing breakdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleTimingStatus {
+    /// The rule completed normally.
+    Completed,
+    /// The rule exceeded its configured time budget.
+    TimedOut,
+    /// The rule panicked and was isolated.
+    Panicked,
+}
+
+impl RuleTimingStatus {
+    /// Stable lowercase label used in `--timings` output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleTimingStatus::Completed => "completed",
+            RuleTimingStatus::TimedOut => "timed_out",
+            RuleTimingStatus::Panicked => "panicked",
+        }
+    }
+}
+
+/// Wall-clock time spent in one rule.
+///
+/// Timings are presentation-only metadata for `--timings`. They are never
+/// included in JSON/SARIF/Markdown reports and never influence findings,
+/// ordering, fingerprints or the exit gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleTiming {
+    /// Rule id (for example `SS-001`).
+    pub rule_id: String,
+    /// Elapsed microseconds, summed across roots when merging outcomes.
+    pub elapsed_micros: u128,
+    /// How the rule finished.
+    pub status: RuleTimingStatus,
+}
+
+impl RuleTiming {
+    /// Elapsed time in milliseconds.
+    pub fn elapsed_ms(&self) -> f64 {
+        self.elapsed_micros as f64 / 1_000.0
+    }
+}
+
 /// How many findings were shown after an explicit report limit.
 ///
 /// Truncation only affects presentation: the failure gate is evaluated against
@@ -112,6 +156,9 @@ pub struct ScanOutcome {
     /// `None` means the report contains every finding. The gate is always
     /// evaluated before truncation, so this field never changes the exit code.
     pub truncation: Option<FindingTruncation>,
+    /// Per-rule wall-clock timings, in registration order (or rule id order
+    /// after merging roots). Presentation-only; never serialized into reports.
+    pub rule_timings: Vec<RuleTiming>,
 }
 
 impl ScanOutcome {
@@ -393,6 +440,7 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
     stats.files_failed = stats.files_analyzed - stats.files_parsed;
 
     let budget = config.rules.rule_time_budget_ms.map(Duration::from_millis);
+    let mut rule_timings: Vec<RuleTiming> = Vec::new();
 
     for rule in registry.rules() {
         let meta = rule.metadata();
@@ -404,15 +452,22 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
 
         let started = Instant::now();
         let mut rule_findings = Vec::new();
-        match catch_unwind(AssertUnwindSafe(|| rule.analyze(&ctx, &mut rule_findings))) {
+        let result = catch_unwind(AssertUnwindSafe(|| rule.analyze(&ctx, &mut rule_findings)));
+        let elapsed = started.elapsed();
+        match result {
             Ok(()) => {
                 if let Some(limit) = budget {
-                    if started.elapsed() > limit {
+                    if elapsed > limit {
                         // Rust cannot preempt a running rule and the parsed AST
                         // is not thread-safe, so the budget is best-effort:
                         // discard everything the rule produced after overrunning
                         // and report the overrun.
                         stats.rules_timed_out += 1;
+                        rule_timings.push(RuleTiming {
+                            rule_id: meta.id.to_string(),
+                            elapsed_micros: elapsed.as_micros(),
+                            status: RuleTimingStatus::TimedOut,
+                        });
                         diagnostics.push(Diagnostic::warning(
                             DiagnosticCode::RuleTimeBudgetExceeded,
                             format!(
@@ -426,10 +481,20 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
                         continue;
                     }
                 }
+                rule_timings.push(RuleTiming {
+                    rule_id: meta.id.to_string(),
+                    elapsed_micros: elapsed.as_micros(),
+                    status: RuleTimingStatus::Completed,
+                });
                 findings.extend(rule_findings);
             }
             Err(_) => {
                 stats.rules_failed += 1;
+                rule_timings.push(RuleTiming {
+                    rule_id: meta.id.to_string(),
+                    elapsed_micros: elapsed.as_micros(),
+                    status: RuleTimingStatus::Panicked,
+                });
                 diagnostics.push(Diagnostic::error(
                     DiagnosticCode::RulePanicked,
                     format!("rule {} panicked; its findings were discarded", meta.id),
@@ -611,6 +676,7 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
         suppressed,
         config_suppressions,
         truncation: None,
+        rule_timings,
     }
 }
 
@@ -648,6 +714,7 @@ pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
     let mut config_suppressions: Vec<ConfigSuppressionReport> = Vec::new();
     let mut stats = ScanStats::default();
     let mut projects: Vec<Project> = Vec::new();
+    let mut timings: BTreeMap<String, (u128, RuleTimingStatus)> = BTreeMap::new();
 
     for (mut outcome, label) in outcomes.into_iter().zip(labels.iter()) {
         if let Some(prefix) = prefix_for(label) {
@@ -676,6 +743,13 @@ pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
         suppressed.append(&mut outcome.suppressed);
         config_suppressions.append(&mut outcome.config_suppressions);
         merge_stats(&mut stats, &outcome.stats);
+        for timing in &outcome.rule_timings {
+            let entry = timings
+                .entry(timing.rule_id.clone())
+                .or_insert((0, RuleTimingStatus::Completed));
+            entry.0 += timing.elapsed_micros;
+            entry.1 = merge_timing_status(entry.1, timing.status);
+        }
         projects.push(outcome.project);
     }
 
@@ -694,6 +768,15 @@ pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
         .map(|suppression| suppression.findings_suppressed)
         .sum();
 
+    let rule_timings: Vec<RuleTiming> = timings
+        .into_iter()
+        .map(|(rule_id, (elapsed_micros, status))| RuleTiming {
+            rule_id,
+            elapsed_micros,
+            status,
+        })
+        .collect();
+
     findings.sort_by_key(|finding| finding.sort_key());
     findings.dedup_by(|a, b| a.fingerprint == b.fingerprint);
 
@@ -707,6 +790,18 @@ pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
         suppressed,
         config_suppressions,
         truncation: None,
+        rule_timings,
+    }
+}
+
+/// Chooses the most severe status when the same rule ran under several roots.
+fn merge_timing_status(a: RuleTimingStatus, b: RuleTimingStatus) -> RuleTimingStatus {
+    if a == RuleTimingStatus::Panicked || b == RuleTimingStatus::Panicked {
+        RuleTimingStatus::Panicked
+    } else if a == RuleTimingStatus::TimedOut || b == RuleTimingStatus::TimedOut {
+        RuleTimingStatus::TimedOut
+    } else {
+        RuleTimingStatus::Completed
     }
 }
 
@@ -1552,6 +1647,57 @@ mod tests {
             .iter()
             .any(|d| d.code == DiagnosticCode::RulePanicked));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rule_timings_record_completed_and_panicked_rules() {
+        let (root, loaded) = project_with_source("timings", "fn a() {}\n");
+        let mut registry = RuleRegistry::new();
+        registry
+            .register(Box::new(OneFindingRule::new(Severity::High)))
+            .unwrap();
+        registry.register(Box::new(PanickingRule::new())).unwrap();
+
+        let outcome = scan(&loaded, &registry, &ScanConfig::default());
+
+        let ids: Vec<_> = outcome
+            .rule_timings
+            .iter()
+            .map(|timing| (timing.rule_id.as_str(), timing.status))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                ("SS-001", RuleTimingStatus::Completed),
+                ("SS-902", RuleTimingStatus::Panicked)
+            ]
+        );
+        assert_eq!(outcome.rule_timings.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merged_outcomes_sum_timings_per_rule() {
+        let (root_a, loaded_a) = project_with_source("timings-a", "fn a() {}\n");
+        let (root_b, loaded_b) = project_with_source("timings-b", "fn b() {}\n");
+        let mut registry = RuleRegistry::new();
+        registry
+            .register(Box::new(OneFindingRule::new(Severity::High)))
+            .unwrap();
+
+        let first = scan(&loaded_a, &registry, &ScanConfig::default());
+        let second = scan(&loaded_b, &registry, &ScanConfig::default());
+        let merged = merge(
+            vec![first.clone(), second.clone()],
+            &["a".to_string(), "b".to_string()],
+        );
+
+        assert_eq!(merged.rule_timings.len(), 1);
+        let expected = first.rule_timings[0].elapsed_micros + second.rule_timings[0].elapsed_micros;
+        assert_eq!(merged.rule_timings[0].elapsed_micros, expected);
+        assert_eq!(merged.rule_timings[0].status, RuleTimingStatus::Completed);
+        let _ = std::fs::remove_dir_all(&root_a);
+        let _ = std::fs::remove_dir_all(&root_b);
     }
 
     #[test]

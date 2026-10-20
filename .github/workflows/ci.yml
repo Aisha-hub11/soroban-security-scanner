@@ -144,6 +144,29 @@ jobs:
             "sdk-${{ matrix.sdk }}.json" \
             --sdk "${{ matrix.sdk }}"
 
+  benchmark:
+    name: Benchmark regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build scanner
+        run: cargo build --release -p soroban-scan-cli
+      - name: Compare against the recorded baseline
+        run: |
+          python3 tools/benchmark.py \
+            --runs 5 \
+            --baseline tools/benchmark_baseline.json \
+            --json-out target/benchmark-stats.json
+      - name: Upload benchmark stats
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-stats
+          path: target/benchmark-stats.json
+          if-no-files-found: ignore
+
   python:
     name: Python helper tests
     runs-on: ubuntu-latest

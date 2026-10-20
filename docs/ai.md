@@ -88,6 +88,26 @@ error: assistance is unavailable: assistance provider 'openai' is not available 
 This is deliberate. Enabling assistance can never silently fall back to
 unverified behavior.
 
+## Request budget and backoff
+
+Assistance is bounded so a scan with thousands of findings cannot trigger
+thousands of provider requests:
+
+```toml
+[ai]
+max_requests = 50   # hard per-scan budget; 0 disables calls
+max_retries = 2     # bounded retries per request
+backoff_ms = 250    # base exponential backoff
+max_backoff_ms = 4000
+```
+
+`GuidanceSession` consumes one slot for the summary and one per finding. When
+the budget is exhausted it stops calling the provider, prints an `AI-001`
+diagnostic to stderr, and the scan completes normally (the deterministic report
+and exit code are unchanged). Retries are capped by `max_retries` with
+exponential backoff capped at `max_backoff_ms`; assistance never retries
+indefinitely.
+
 ## Implementing a provider
 
 A provider implements the `Assistant` trait in

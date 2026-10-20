@@ -53,8 +53,23 @@ roots in one run.
 | `--guidance` | Print labeled offline guidance for findings (see [ai.md](ai.md)). |
 | `--quiet`, `-q` | Compact output; suppresses the header. |
 | `--verbose`, `-v` | Include diagnostics (see [diagnostics.md](diagnostics.md)). |
+| `--timings` | Print per-rule wall-clock time to stderr. Presentation-only: never appears in JSON/SARIF/Markdown/GitHub output and never changes findings, ordering, fingerprints or the exit gate. |
 | `--pager <auto\|never\|always>` | Page long terminal reports through `$PAGER` (default `auto`); never affects JSON/SARIF/Markdown/GitHub output. |
 | `--color <auto\|always\|never>` | Colorize terminal output (default `auto`). Machine formats never contain ANSI escapes. |
+
+### Per-rule timings
+
+`--timings` writes one line per executed rule to stderr, sorted by rule id:
+
+```
+timing: SS-001 0.412 ms (completed)
+timing: SS-007 2.871 ms (completed)
+```
+
+The status is `completed`, `timed_out` (the rule exceeded
+`rules.time_budget_ms`), or `panicked` (isolated by the engine). Timings are
+wall-clock measurements, so they intentionally never enter machine-readable
+reports; the scan report is byte-identical with or without the flag.
 
 ### Inline suppressions
 

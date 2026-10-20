@@ -85,6 +85,12 @@ enabled = false
 temperature = 0.0
 # Maximum tokens the provider may return, 1-8192.
 max_output_tokens = 1024
+# Requests per scan; AI calls stop (fail closed) when exhausted.
+# max_requests = 50
+# Per-request retry limit and exponential backoff.
+# max_retries = 2
+# backoff_ms = 250
+# max_backoff_ms = 4000
 ```
 
 ### Fields
@@ -109,6 +115,10 @@ max_output_tokens = 1024
 | `ai.model` | string | *(none)* | Model identifier. |
 | `ai.temperature` | float | `0.0` | Sampling temperature; must be finite and in `0.0..=1.0`. Out-of-range values are rejected during configuration loading. |
 | `ai.max_output_tokens` | integer | `1024` | Maximum provider output tokens; must be in `1..=8192`. Bounds latency and runaway cost. |
+| `ai.max_requests` | integer | `50` | Hard per-scan request budget. `0` disables assistant calls; exhaustion emits `AI-001` and continues without assistance. |
+| `ai.max_retries` | integer | `2` | Bounded retries per provider request. |
+| `ai.backoff_ms` | integer | `250` | Base exponential backoff delay. |
+| `ai.max_backoff_ms` | integer | `4000` | Maximum single backoff delay. |
 
 Unknown fields and category names are rejected. An unknown rule id in
 `disabled` or `enabled` is a usage error. An override that targets an unknown or
