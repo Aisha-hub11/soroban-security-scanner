@@ -952,12 +952,127 @@ fn collect_item_spans(items: &[syn::Item], out: &mut Vec<(usize, usize)>) {
     }
 }
 
-fn nearest_crate_root(path: &Path, crate_roots: &[PathBuf]) -> Option<PathBuf> {
-    crate_roots
+/// A manifest directory that may act as a crate root.
+#[derive(Debug, Clone)]
+struct CrateRootCandidate {
+    /// Directory containing the manifest.
+    dir: PathBuf,
+    /// Whether the manifest is a member of its enclosing workspace.
+    ///
+    /// A standalone package (no enclosing workspace) is always a member of its
+    /// own one-package universe. A package nested inside a workspace is only a
+    /// crate root when its directory matches one of that workspace's `members`
+    /// globs; otherwise Cargo does not consider it part of the workspace.
+    is_member: bool,
+}
+
+/// Builds crate-root candidates and verifies workspace membership (#47).
+///
+/// Nested packages that are not matched by an enclosing workspace's `members`
+/// globs must not win the "nearest manifest" race. Treating them as crate roots
+/// produces module paths for files the workspace does not actually include.
+fn crate_root_candidates(manifests: &[crate::model::Manifest]) -> Vec<CrateRootCandidate> {
+    use globset::GlobBuilder;
+
+    // Enclosing workspaces, keyed by directory. Invalid member globs are
+    // ignored: they cannot prove membership, so the package fails closed and is
+    // reported as ambiguous rather than silently accepted.
+    let workspaces: Vec<(PathBuf, Vec<globset::GlobMatcher>)> = manifests
         .iter()
-        .filter(|root| path.starts_with(root))
-        .max_by_key(|root| root.components().count())
-        .cloned()
+        .filter_map(|manifest| {
+            let workspace = manifest.workspace.as_ref()?;
+            let dir = manifest.path.parent()?.to_path_buf();
+            let globs = workspace
+                .members
+                .iter()
+                .filter_map(|pattern| {
+                    GlobBuilder::new(pattern)
+                        .literal_separator(true)
+                        .build()
+                        .ok()
+                        .map(|glob| glob.compile_matcher())
+                })
+                .collect();
+            Some((dir, globs))
+        })
+        .collect();
+
+    manifests
+        .iter()
+        .filter_map(|manifest| {
+            // A `[workspace]`-only manifest is not a package and therefore not
+            // a crate root. The scan root remains the fallback for files that
+            // only sit under a virtual workspace.
+            manifest.package.as_ref()?;
+            let dir = manifest.path.parent()?.to_path_buf();
+
+            let enclosing = workspaces
+                .iter()
+                .filter(|(workspace_dir, _)| {
+                    dir != *workspace_dir && dir.starts_with(workspace_dir)
+                })
+                .max_by_key(|(workspace_dir, _)| workspace_dir.components().count());
+
+            let is_member = match enclosing {
+                None => true,
+                Some((workspace_dir, globs)) => {
+                    let relative = dir.strip_prefix(workspace_dir).unwrap_or(&dir);
+                    let relative = relative.to_string_lossy().replace('\\', "/");
+                    globs.iter().any(|glob| {
+                        glob.is_match(&relative) || glob.is_match(format!("{relative}/Cargo.toml"))
+                    })
+                }
+            };
+
+            Some(CrateRootCandidate { dir, is_member })
+        })
+        .collect()
+}
+
+/// Chooses the crate root for `path`, or reports why the choice is ambiguous.
+fn associate_crate_root(
+    path: &Path,
+    candidates: &[CrateRootCandidate],
+    root: &Path,
+) -> (PathBuf, Option<String>) {
+    let mut matching: Vec<&CrateRootCandidate> = candidates
+        .iter()
+        .filter(|candidate| path.starts_with(&candidate.dir))
+        .collect();
+    matching.sort_by_key(|candidate| candidate.dir.components().count());
+
+    let chosen = matching
+        .iter()
+        .filter(|candidate| candidate.is_member)
+        .max_by_key(|candidate| candidate.dir.components().count())
+        .copied();
+    let deepest = matching.last().copied();
+
+    match chosen {
+        Some(candidate) => {
+            let ambiguous = deepest.is_some_and(|deepest| {
+                deepest.dir.components().count() > candidate.dir.components().count()
+            });
+            let message = ambiguous.then(|| {
+                format!(
+                    "ambiguous crate root: a nested manifest is not a workspace member; \
+                     using {}",
+                    candidate.dir.display()
+                )
+            });
+            (candidate.dir.clone(), message)
+        }
+        None => {
+            let message = deepest.map(|candidate| {
+                format!(
+                    "ambiguous crate root: the nearest manifest is not a workspace member; \
+                     using the scan root instead of {}",
+                    candidate.dir.display()
+                )
+            });
+            (root.to_path_buf(), message)
+        }
+    }
 }
 
 /// Loads and parses a set of Rust source files.
@@ -970,10 +1085,7 @@ pub fn load_sources(
     root: &Path,
     exclude_tests: bool,
 ) -> (Vec<ParsedSource>, Vec<Diagnostic>) {
-    let crate_roots: Vec<PathBuf> = manifests
-        .iter()
-        .filter_map(|m| m.path.parent().map(Path::to_path_buf))
-        .collect();
+    let candidates = crate_root_candidates(manifests);
 
     let mut sources = Vec::new();
     let mut diagnostics = Vec::new();
@@ -1014,8 +1126,14 @@ pub fn load_sources(
             }
         };
 
-        let crate_root =
-            nearest_crate_root(path, &crate_roots).unwrap_or_else(|| root.to_path_buf());
+        let (crate_root, ambiguity) = associate_crate_root(path, &candidates, root);
+        if let Some(message) = ambiguity {
+            diagnostics.push(Diagnostic::warning(
+                DiagnosticCode::AmbiguousCrateRoot,
+                message,
+                Some(path.clone()),
+            ));
+        }
         let source = parse_source_with_options(path, &crate_root, &content, exclude_tests);
         if let Some(err) = &source.parse_error {
             diagnostics.push(Diagnostic::warning(

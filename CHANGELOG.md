@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Associate source files with crate roots only after verifying workspace
+  membership against `members` globs, and report `CRATE-001` diagnostics for
+  ambiguous nested packages instead of guessing.
 - Add a crates.io publishing workflow that verifies the `v*` tag against the
   workspace version, publishes `soroban-scan-core` then `soroban-scan-cli` in
   lockstep, and runs `cargo publish --dry-run` in CI.

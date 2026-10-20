@@ -1,0 +1,7 @@
+[package]
+name = "fixture-nested-nonmember"
+version = "0.1.0"
+edition = "2021"
+publish = false
+# Deliberately not listed in the workspace's `members = ["crates/*"]` glob:
+# this package lives one level below the matching member.
