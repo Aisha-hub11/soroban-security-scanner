@@ -15,6 +15,8 @@ pub struct LoadedProject {
     pub project: Project,
     /// Parsed Rust source files.
     pub sources: Vec<ParsedSource>,
+    /// Generated source files excluded before analysis.
+    pub generated_files_excluded: usize,
 }
 
 /// Loads a project, including parsed sources and Soroban evidence.
@@ -44,9 +46,17 @@ pub fn load(root: &Path, opts: &DiscoveryOptions) -> Result<LoadedProject, ScanE
         }
     }
 
-    let (sources, source_diagnostics) =
-        source::load_sources(&discovered.rust_files, &manifests, root, opts.exclude_tests);
-    diagnostics.extend(source_diagnostics);
+    let loaded = source::load_sources_with_options(
+        &discovered.rust_files,
+        &manifests,
+        root,
+        source::SourceOptions {
+            exclude_tests: opts.exclude_tests,
+            exclude_generated: opts.exclude_generated,
+        },
+    );
+    let sources = loaded.sources;
+    diagnostics.extend(loaded.diagnostics);
 
     let soroban = soroban::analyze_manifests(&manifests);
     let mut project = Project {
@@ -59,7 +69,11 @@ pub fn load(root: &Path, opts: &DiscoveryOptions) -> Result<LoadedProject, ScanE
     };
     source::apply_source_evidence(&mut project, &sources);
 
-    Ok(LoadedProject { project, sources })
+    Ok(LoadedProject {
+        project,
+        sources,
+        generated_files_excluded: loaded.generated_files_excluded,
+    })
 }
 
 /// Loads only project metadata (no parsed sources).
@@ -99,9 +113,17 @@ pub fn load_files_with_options(
         }
     }
 
-    let (sources, source_diagnostics) =
-        source::load_sources(files, &manifests, root, opts.exclude_tests);
-    diagnostics.extend(source_diagnostics);
+    let loaded = source::load_sources_with_options(
+        files,
+        &manifests,
+        root,
+        source::SourceOptions {
+            exclude_tests: opts.exclude_tests,
+            exclude_generated: opts.exclude_generated,
+        },
+    );
+    let sources = loaded.sources;
+    diagnostics.extend(loaded.diagnostics);
 
     let soroban = soroban::analyze_manifests(&manifests);
     let mut project = Project {
@@ -114,7 +136,11 @@ pub fn load_files_with_options(
     };
     source::apply_source_evidence(&mut project, &sources);
 
-    Ok(LoadedProject { project, sources })
+    Ok(LoadedProject {
+        project,
+        sources,
+        generated_files_excluded: loaded.generated_files_excluded,
+    })
 }
 
 #[cfg(test)]

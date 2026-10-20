@@ -30,3 +30,10 @@ the scanner's own crates and tests; downstream code should not depend on them.
 
 The `api_stability` test checks that every top-level `pub mod` is classified in
 this document as stable or unstable, and that stable modules remain documented.
+
+CI also runs [`cargo-semver-checks`](https://github.com/obi1kenobi/cargo-semver-checks)
+on every pull request, scoped to `soroban-scan-core`, comparing the branch
+against the latest `v*` release tag. While the crate is pre-1.0, the check uses
+`release-type: minor`, so breaking changes are reported but allowed in a minor
+release (see [`development/release.md`](development/release.md)). Once 1.0 ships,
+the release type should be tightened.

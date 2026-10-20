@@ -29,6 +29,7 @@ Start here.
 - [Contributing](../CONTRIBUTING.md)
 - [Contributing through Drips Wave](WAVE.md)
 - [Development Setup](development/setup.md)
+- [Repository Automation (xtask)](development/xtask.md)
 - [Testing](development/testing.md)
 - [Benchmarks](development/benchmarks.md)
 - [Writing Rules](contributors/writing-rules.md)
@@ -38,6 +39,7 @@ Start here.
 ## Project
 
 - [Architecture](architecture/overview.md)
+- [Workspace layout and module map](architecture/workspace-layout.md)
 - [Architecture Decision Records](architecture/adr/README.md)
 - [Compatibility](compatibility.md)
 - [Security Model](security/security-model.md)

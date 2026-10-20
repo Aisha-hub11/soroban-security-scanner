@@ -1,0 +1,5 @@
+# Cargo aliases for repository automation.
+#
+# `cargo xtask <command>` is equivalent to `cargo run -p xtask -- <command>`.
+[alias]
+xtask = "run --package xtask --"

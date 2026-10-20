@@ -10,9 +10,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use globset::Glob;
 use serde::Serialize;
 
-use crate::config::ScanConfig;
+use crate::config::{ScanConfig, SuppressionRule};
 use crate::context::AnalysisContext;
 use crate::error::ScanError;
 use crate::finding::Finding;
@@ -46,8 +47,20 @@ pub struct ScanStats {
     pub findings_rejected: usize,
     /// Inline suppression directives detected in the analyzed sources.
     pub suppressions_detected: usize,
-    /// Findings excluded from the gate by an inline suppression directive.
+    /// Findings excluded from the gate by any suppression.
     pub findings_suppressed: usize,
+    /// Findings excluded from the gate by a configured suppression.
+    pub findings_suppressed_by_config: usize,
+    /// Configured suppression entries present in the effective configuration.
+    pub config_suppressions_detected: usize,
+    /// Configured suppression entries whose path matched at least one finding.
+    pub config_suppressions_matched: usize,
+    /// Configured suppression entries that suppressed at least one finding.
+    pub config_suppressions_applied: usize,
+    /// Source files marked as generated and still analyzed.
+    pub generated_files_marked: usize,
+    /// Source files excluded because they are generated.
+    pub generated_files_excluded: usize,
 }
 
 /// How many findings were shown after an explicit report limit.
@@ -90,8 +103,10 @@ pub struct ScanOutcome {
     /// Every detected directive is listed, including directives that matched no
     /// finding, so suppression usage stays auditable.
     pub suppressions: Vec<Suppression>,
-    /// Findings excluded from the gate by an inline suppression directive.
+    /// Findings excluded from the gate by any suppression.
     pub suppressed: Vec<SuppressedFinding>,
+    /// Audit records for every configured suppression, including unused ones.
+    pub config_suppressions: Vec<ConfigSuppressionReport>,
     /// Set when the caller bounded the number of reported findings.
     ///
     /// `None` means the report contains every finding. The gate is always
@@ -121,18 +136,59 @@ impl ScanOutcome {
     }
 }
 
-/// The directive that suppressed a finding, as reported for auditability.
+/// Where a suppression came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuppressionSource {
+    /// An inline `soroban-scan: ignore` directive.
+    #[default]
+    Inline,
+    /// A `[[suppressions]]` entry from configuration.
+    Config,
+}
+
+impl SuppressionSource {
+    fn is_inline(&self) -> bool {
+        *self == SuppressionSource::Inline
+    }
+}
+
+/// The directive or configuration entry that suppressed a finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SuppressionInfo {
-    /// Root-relative, forward-slash path of the file containing the directive.
+    /// Root-relative, forward-slash file used for the suppression.
     pub file: String,
-    /// 1-based line of the directive comment.
+    /// 1-based line used for the suppression.
     pub line: usize,
-    /// Rule targets of the directive (for example `SS-001,SS-002`, or `all`).
+    /// Rule targets (for example `SS-001,SS-002`, or `all`).
     pub rules: String,
-    /// Reason supplied by the directive, when present.
+    /// Reason supplied by the directive or configuration, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Suppression source.
+    #[serde(default, skip_serializing_if = "SuppressionSource::is_inline")]
+    pub source: SuppressionSource,
+    /// Configured path glob, when `source` is `config`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Audit record for one configured suppression entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConfigSuppressionReport {
+    /// Configured relative path glob.
+    pub path: String,
+    /// Configured rule id or `all`.
+    pub rule: String,
+    /// Optional reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Number of findings whose path matched this glob, regardless of rule.
+    pub matched: usize,
+    /// Number of findings this entry removed from the gate.
+    pub findings_suppressed: usize,
+    /// True when at least one finding was suppressed.
+    pub applied: bool,
 }
 
 /// A finding excluded from the gate by an inline suppression directive.
@@ -209,6 +265,89 @@ pub fn override_diagnostics(config: &ScanConfig, registry: &RuleRegistry) -> Vec
         .collect()
 }
 
+struct CompiledConfigSuppression {
+    report: ConfigSuppressionReport,
+    matcher: Option<globset::GlobMatcher>,
+    rule: String,
+    path: String,
+    reason: Option<String>,
+}
+
+impl CompiledConfigSuppression {
+    fn rule_matches(&self, rule_id: &str) -> bool {
+        self.rule
+            .eq_ignore_ascii_case(crate::config::ALL_SUPPRESSION_RULES)
+            || self.rule.eq_ignore_ascii_case(rule_id)
+    }
+}
+
+/// Compiles configured suppressions deterministically.
+///
+/// Invalid entries are never dropped silently: they emit a `CONFIG-002`
+/// diagnostic and remain visible in the audit report with no matches.
+fn compile_config_suppressions(
+    config: &ScanConfig,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<CompiledConfigSuppression> {
+    let mut indexed: Vec<&SuppressionRule> = config.suppressions.iter().collect();
+    indexed.sort_by(|a, b| {
+        (
+            a.path.trim(),
+            a.rule_label(),
+            a.reason.as_deref().unwrap_or_default(),
+        )
+            .cmp(&(
+                b.path.trim(),
+                b.rule_label(),
+                b.reason.as_deref().unwrap_or_default(),
+            ))
+    });
+
+    indexed
+        .into_iter()
+        .map(|rule| {
+            let reason = rule
+                .reason
+                .as_ref()
+                .map(|reason| reason.trim().to_string())
+                .filter(|reason| !reason.is_empty());
+            let (matcher, rule_text, path) = match rule.validate() {
+                Ok(()) => {
+                    let matcher = Glob::new(rule.path.trim())
+                        .ok()
+                        .map(|glob| glob.compile_matcher());
+                    (matcher, rule.rule_label(), rule.path.trim().to_string())
+                }
+                Err(error) => {
+                    diagnostics.push(Diagnostic::warning(
+                        DiagnosticCode::InvalidSuppression,
+                        format!(
+                            "configured suppression for '{}' is invalid and was not applied: {error}",
+                            rule.path
+                        ),
+                        None,
+                    ));
+                    (None, rule.rule_label(), rule.path.trim().to_string())
+                }
+            };
+            CompiledConfigSuppression {
+                report: ConfigSuppressionReport {
+                    path: path.clone(),
+                    rule: rule_text.clone(),
+                    reason: reason.clone(),
+                    matched: 0,
+                    findings_suppressed: 0,
+                    applied: false,
+                },
+                matcher,
+                rule: rule_text,
+                path,
+                reason,
+            }
+        })
+        .collect()
+}
+
 /// Runs the scanner over a loaded project.
 pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig) -> ScanOutcome {
     let ctx = AnalysisContext::new(
@@ -243,6 +382,12 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
             .project
             .source_files
             .saturating_sub(loaded.sources.len()),
+        generated_files_marked: loaded
+            .sources
+            .iter()
+            .filter(|source| source.is_generated())
+            .count(),
+        generated_files_excluded: loaded.generated_files_excluded,
         ..ScanStats::default()
     };
     stats.files_failed = stats.files_analyzed - stats.files_parsed;
@@ -386,6 +531,8 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
                     line: suppression.line,
                     rules: suppression.targets.label(),
                     reason: suppression.reason.clone(),
+                    source: SuppressionSource::Inline,
+                    path: None,
                 },
             });
             return false;
@@ -393,8 +540,66 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
         true
     });
 
+    // Apply configured suppressions only after inline directives, so an inline
+    // directive always takes precedence. Every configured entry is reported,
+    // even when its path or rule matches nothing.
+    let mut compiled = compile_config_suppressions(config, &mut diagnostics);
+    findings.retain(|finding| {
+        let file = normalize_rel(&finding.location.file);
+        let mut chosen: Option<usize> = None;
+        for (index, suppression) in compiled.iter_mut().enumerate() {
+            let path_matches = suppression
+                .matcher
+                .as_ref()
+                .is_some_and(|matcher| matcher.is_match(&file));
+            if !path_matches {
+                continue;
+            }
+            suppression.report.matched += 1;
+            if chosen.is_none() && suppression.rule_matches(&finding.rule_id) {
+                chosen = Some(index);
+            }
+        }
+        let Some(index) = chosen else {
+            return true;
+        };
+        let suppression = &mut compiled[index];
+        suppression.report.findings_suppressed += 1;
+        suppression.report.applied = true;
+        suppressed.push(SuppressedFinding {
+            finding: finding.clone(),
+            suppression: SuppressionInfo {
+                file: file.clone(),
+                line: finding.location.line,
+                rules: suppression.rule.clone(),
+                reason: suppression.reason.clone(),
+                source: SuppressionSource::Config,
+                path: Some(suppression.path.clone()),
+            },
+        });
+        false
+    });
+
+    let config_suppressions: Vec<ConfigSuppressionReport> = compiled
+        .into_iter()
+        .map(|suppression| suppression.report)
+        .collect();
+
     stats.suppressions_detected = suppressions.len();
     stats.findings_suppressed = suppressed.len();
+    stats.findings_suppressed_by_config = config_suppressions
+        .iter()
+        .map(|suppression| suppression.findings_suppressed)
+        .sum();
+    stats.config_suppressions_detected = config_suppressions.len();
+    stats.config_suppressions_matched = config_suppressions
+        .iter()
+        .filter(|suppression| suppression.matched > 0)
+        .count();
+    stats.config_suppressions_applied = config_suppressions
+        .iter()
+        .filter(|suppression| suppression.applied)
+        .count();
 
     ScanOutcome {
         project: loaded.project.clone(),
@@ -404,6 +609,7 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
         config: config.clone(),
         suppressions,
         suppressed,
+        config_suppressions,
         truncation: None,
     }
 }
@@ -439,6 +645,7 @@ pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut suppressions: Vec<Suppression> = Vec::new();
     let mut suppressed: Vec<SuppressedFinding> = Vec::new();
+    let mut config_suppressions: Vec<ConfigSuppressionReport> = Vec::new();
     let mut stats = ScanStats::default();
     let mut projects: Vec<Project> = Vec::new();
 
@@ -467,9 +674,25 @@ pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
         diagnostics.append(&mut outcome.diagnostics);
         suppressions.append(&mut outcome.suppressions);
         suppressed.append(&mut outcome.suppressed);
+        config_suppressions.append(&mut outcome.config_suppressions);
         merge_stats(&mut stats, &outcome.stats);
         projects.push(outcome.project);
     }
+
+    let config_suppressions = merge_config_suppression_reports(config_suppressions);
+    stats.config_suppressions_detected = config_suppressions.len();
+    stats.config_suppressions_matched = config_suppressions
+        .iter()
+        .filter(|suppression| suppression.matched > 0)
+        .count();
+    stats.config_suppressions_applied = config_suppressions
+        .iter()
+        .filter(|suppression| suppression.applied)
+        .count();
+    stats.findings_suppressed_by_config = config_suppressions
+        .iter()
+        .map(|suppression| suppression.findings_suppressed)
+        .sum();
 
     findings.sort_by_key(|finding| finding.sort_key());
     findings.dedup_by(|a, b| a.fingerprint == b.fingerprint);
@@ -482,6 +705,7 @@ pub fn merge(outcomes: Vec<ScanOutcome>, labels: &[String]) -> ScanOutcome {
         config,
         suppressions,
         suppressed,
+        config_suppressions,
         truncation: None,
     }
 }
@@ -514,6 +738,38 @@ fn prepend_location(finding: &mut Finding, prefix: &str) {
     finding.refresh_fingerprint();
 }
 
+/// Merges identical configured suppression audit entries across roots.
+fn merge_config_suppression_reports(
+    mut reports: Vec<ConfigSuppressionReport>,
+) -> Vec<ConfigSuppressionReport> {
+    reports.sort_by(|a, b| {
+        (
+            a.path.as_str(),
+            a.rule.as_str(),
+            a.reason.as_deref().unwrap_or_default(),
+        )
+            .cmp(&(
+                b.path.as_str(),
+                b.rule.as_str(),
+                b.reason.as_deref().unwrap_or_default(),
+            ))
+    });
+    let mut merged: Vec<ConfigSuppressionReport> = Vec::new();
+    for report in reports {
+        if let Some(last) = merged.last_mut() {
+            if last.path == report.path && last.rule == report.rule && last.reason == report.reason
+            {
+                last.matched += report.matched;
+                last.findings_suppressed += report.findings_suppressed;
+                last.applied |= report.applied;
+                continue;
+            }
+        }
+        merged.push(report);
+    }
+    merged
+}
+
 /// Combines per-root statistics; rule counts are identical across roots.
 fn merge_stats(stats: &mut ScanStats, other: &ScanStats) {
     if stats.rules_run == 0 && stats.rules_skipped == 0 {
@@ -528,6 +784,12 @@ fn merge_stats(stats: &mut ScanStats, other: &ScanStats) {
     stats.findings_rejected += other.findings_rejected;
     stats.suppressions_detected += other.suppressions_detected;
     stats.findings_suppressed += other.findings_suppressed;
+    stats.findings_suppressed_by_config += other.findings_suppressed_by_config;
+    stats.config_suppressions_detected += other.config_suppressions_detected;
+    stats.config_suppressions_matched += other.config_suppressions_matched;
+    stats.config_suppressions_applied += other.config_suppressions_applied;
+    stats.generated_files_marked += other.generated_files_marked;
+    stats.generated_files_excluded += other.generated_files_excluded;
 }
 
 /// Ranks project classifications so the strongest one can be selected.
@@ -608,6 +870,39 @@ pub fn synthetic_loaded_with_options(
             Some(path.clone()),
         ));
     }
+    if parsed.is_generated() {
+        diagnostics.push(Diagnostic::info(
+            DiagnosticCode::GeneratedFileMarked,
+            format!(
+                "source file is marked as generated ({} marker(s)); findings are still reported",
+                parsed.generated_markers.len()
+            ),
+            Some(path.clone()),
+        ));
+    }
+    if !parsed.macro_invocations.is_empty() {
+        let mut names: Vec<&str> = parsed
+            .macro_invocations
+            .iter()
+            .map(|invocation| invocation.name.as_str())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        let shown = names.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+        let suffix = if names.len() > 5 {
+            format!(" (+{} more)", names.len() - 5)
+        } else {
+            String::new()
+        };
+        diagnostics.push(Diagnostic::info(
+            DiagnosticCode::UnexpandedMacro,
+            format!(
+                "{} macro invocation(s) were not expanded: {shown}{suffix}",
+                parsed.macro_invocations.len()
+            ),
+            Some(path.clone()),
+        ));
+    }
 
     let mut info = crate::model::SorobanInfo {
         has_sdk_dependency: true,
@@ -629,7 +924,32 @@ pub fn synthetic_loaded_with_options(
     LoadedProject {
         project,
         sources: vec![parsed],
+        generated_files_excluded: 0,
     }
+}
+
+/// Builds a synthetic single-file project using the effective scan options.
+pub fn synthetic_loaded_with_config(
+    src: &str,
+    file_name: &str,
+    config: &ScanConfig,
+) -> LoadedProject {
+    let mut loaded = synthetic_loaded_with_options(src, file_name, config.exclude_tests);
+    if config.exclude_generated && loaded.sources.iter().any(|source| source.is_generated()) {
+        let path = std::path::PathBuf::from(file_name);
+        loaded.sources.clear();
+        loaded.generated_files_excluded = 1;
+        loaded
+            .project
+            .diagnostics
+            .retain(|diagnostic| diagnostic.code != DiagnosticCode::GeneratedFileMarked);
+        loaded.project.diagnostics.push(Diagnostic::info(
+            DiagnosticCode::GeneratedFileExcluded,
+            "excluding generated source file (exclude_generated is enabled)".to_string(),
+            Some(path),
+        ));
+    }
+    loaded
 }
 
 /// Scans an in-memory source string as a synthetic single-file project.
@@ -640,7 +960,7 @@ pub fn scan_source_str(
     registry: &RuleRegistry,
 ) -> ScanOutcome {
     scan(
-        &synthetic_loaded_with_options(src, file_name, config.exclude_tests),
+        &synthetic_loaded_with_config(src, file_name, config),
         registry,
         config,
     )
@@ -670,6 +990,7 @@ pub fn scan_manifest_str(
     let loaded = LoadedProject {
         project,
         sources: Vec::new(),
+        generated_files_excluded: 0,
     };
     Ok(scan(&loaded, registry, config))
 }
@@ -1246,5 +1567,135 @@ mod tests {
         assert!(outcome.suppressed.is_empty());
         assert_eq!(outcome.stats.suppressions_detected, 0);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn config_suppression(path: &str, rule: &str) -> crate::config::SuppressionRule {
+        crate::config::SuppressionRule {
+            path: path.to_string(),
+            rule: rule.to_string(),
+            reason: Some("accepted for this path".to_string()),
+        }
+    }
+
+    #[test]
+    fn config_suppression_excludes_the_finding_but_reports_it() {
+        let (root, loaded) = project_with_source("config-suppress", "fn a() {}\n");
+        let registry = located_registry(Severity::High, 1);
+        let config = ScanConfig {
+            suppressions: vec![config_suppression("src/**", "SS-001")],
+            ..ScanConfig::default()
+        };
+        let outcome = scan(&loaded, &registry, &config);
+
+        assert!(outcome.findings.is_empty());
+        assert_eq!(outcome.stats.findings_suppressed, 1);
+        assert_eq!(outcome.stats.findings_suppressed_by_config, 1);
+        assert_eq!(outcome.stats.config_suppressions_detected, 1);
+        assert_eq!(outcome.stats.config_suppressions_matched, 1);
+        assert_eq!(outcome.stats.config_suppressions_applied, 1);
+        assert_eq!(outcome.suppressed.len(), 1);
+        let suppressed = &outcome.suppressed[0];
+        assert_eq!(suppressed.suppression.source, SuppressionSource::Config);
+        assert_eq!(suppressed.suppression.path.as_deref(), Some("src/**"));
+        assert_eq!(suppressed.suppression.rules, "SS-001");
+        assert_eq!(
+            suppressed.suppression.reason.as_deref(),
+            Some("accepted for this path")
+        );
+        assert_eq!(outcome.config_suppressions.len(), 1);
+        assert!(outcome.config_suppressions[0].applied);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn inline_suppressions_take_precedence_over_configuration() {
+        let (root, loaded) = project_with_source(
+            "inline-before-config",
+            "// soroban-scan: ignore SS-001 -- reviewed inline\nfn a() {}\n",
+        );
+        let registry = located_registry(Severity::High, 2);
+        let config = ScanConfig {
+            suppressions: vec![config_suppression("src/**", "all")],
+            ..ScanConfig::default()
+        };
+        let outcome = scan(&loaded, &registry, &config);
+
+        assert!(outcome.findings.is_empty());
+        assert_eq!(outcome.suppressed.len(), 1);
+        assert_eq!(
+            outcome.suppressed[0].suppression.source,
+            SuppressionSource::Inline
+        );
+        assert_eq!(outcome.config_suppressions[0].matched, 0);
+        assert!(!outcome.config_suppressions[0].applied);
+        assert_eq!(outcome.stats.config_suppressions_matched, 0);
+        assert_eq!(outcome.stats.config_suppressions_applied, 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_suppression_that_matches_nothing_is_reported() {
+        let (root, loaded) = project_with_source("config-unused", "fn a() {}\n");
+        let registry = located_registry(Severity::High, 1);
+        let config = ScanConfig {
+            suppressions: vec![config_suppression("vendor/**", "all")],
+            ..ScanConfig::default()
+        };
+        let outcome = scan(&loaded, &registry, &config);
+
+        assert_eq!(outcome.findings.len(), 1);
+        assert!(outcome.suppressed.is_empty());
+        assert_eq!(outcome.stats.config_suppressions_detected, 1);
+        assert_eq!(outcome.stats.config_suppressions_matched, 0);
+        assert_eq!(outcome.stats.config_suppressions_applied, 0);
+        assert_eq!(outcome.config_suppressions.len(), 1);
+        assert_eq!(outcome.config_suppressions[0].matched, 0);
+        assert!(!outcome.config_suppressions[0].applied);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_suppression_path_match_with_other_rule_keeps_the_finding() {
+        let (root, loaded) = project_with_source("config-other-rule", "fn a() {}\n");
+        let registry = located_registry(Severity::High, 1);
+        let config = ScanConfig {
+            suppressions: vec![config_suppression("src/**", "SS-002")],
+            ..ScanConfig::default()
+        };
+        let outcome = scan(&loaded, &registry, &config);
+
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.config_suppressions[0].matched, 1);
+        assert_eq!(outcome.config_suppressions[0].findings_suppressed, 0);
+        assert!(!outcome.config_suppressions[0].applied);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generated_files_are_marked_by_default_and_excluded_on_request() {
+        let src = "// @generated by a tool\nfn a() {}\n";
+        let registry = located_registry(Severity::High, 2);
+
+        let marked = scan_source_str(src, "src/lib.rs", &ScanConfig::default(), &registry);
+        assert_eq!(marked.stats.generated_files_marked, 1);
+        assert_eq!(marked.stats.generated_files_excluded, 0);
+        assert_eq!(marked.findings.len(), 1);
+        assert!(marked
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::GeneratedFileMarked));
+
+        let excluded = ScanConfig {
+            exclude_generated: true,
+            ..ScanConfig::default()
+        };
+        let excluded = scan_source_str(src, "src/lib.rs", &excluded, &registry);
+        assert_eq!(excluded.stats.generated_files_marked, 0);
+        assert_eq!(excluded.stats.generated_files_excluded, 1);
+        assert!(excluded.findings.is_empty());
+        assert!(excluded
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::GeneratedFileExcluded));
     }
 }

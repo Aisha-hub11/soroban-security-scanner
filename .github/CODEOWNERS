@@ -1,0 +1,22 @@
+# Review routing for security-sensitive paths (#79).
+#
+# Keep this list focused: CODEOWNERS is for security review, not for gating
+# every contribution. Changes outside these paths do not require a named owner.
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Analysis engine and rule framework.
+/crates/soroban-scan-core/src/rules/        @Ayinkx
+/crates/soroban-scan-core/src/engine.rs     @Ayinkx
+/crates/soroban-scan-core/src/rule.rs       @Ayinkx
+/crates/soroban-scan-core/src/severity.rs   @Ayinkx
+/crates/soroban-scan-core/src/confidence.rs @Ayinkx
+/crates/soroban-scan-core/src/suppression.rs @Ayinkx
+
+# Security and rule documentation.
+/docs/rules/        @Ayinkx
+/docs/security/     @Ayinkx
+/docs/architecture/adr/ @Ayinkx
+/SECURITY.md        @Ayinkx
+
+# CI and release automation can change published artifacts.
+/.github/workflows/ @Ayinkx

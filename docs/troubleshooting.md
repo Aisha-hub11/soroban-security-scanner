@@ -63,11 +63,18 @@ baseline, that includes pre-existing findings. Add a baseline
 
 ## SARIF upload works but no results appear on GitHub
 
-- The upload step must have `security-events: write` permission.
+- The upload step must have `security-events: write` permission. On private
+  repositories it also needs `actions: read`.
 - Fork pull requests cannot upload SARIF; guard the step with the fork check in
   [GitHub Integration](github-integration.md).
 - Code scanning must be enabled for the repository (it is automatic for public
   repositories on first upload).
+- For private or internal repositories, **GitHub Code Security** must be
+  enabled. Without it the upload fails with "GitHub Code Security or GitHub
+  Advanced Security must be enabled for this repository to use code scanning".
+  See [Private repositories](github-integration.md#private-repositories).
+- The repository or organization Actions policy must allow
+  `github/codeql-action`, which provides the `upload-sarif` action.
 
 ## The scan is slow on a large repository
 
