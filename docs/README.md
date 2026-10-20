@@ -29,6 +29,7 @@ Start here.
 - [Contributing](../CONTRIBUTING.md)
 - [Contributing through Drips Wave](WAVE.md)
 - [Development Setup](development/setup.md)
+- [Repository Automation (xtask)](development/xtask.md)
 - [Testing](development/testing.md)
 - [Benchmarks](development/benchmarks.md)
 - [Writing Rules](contributors/writing-rules.md)

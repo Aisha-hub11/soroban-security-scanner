@@ -42,6 +42,16 @@ cargo run -p soroban-scan-cli -- --help
 cargo run -p soroban-scan-cli -- version
 ```
 
+## Repository automation
+
+`cargo xtask` provides offline maintenance commands (docs link checking, fixture
+scaffolding, and backlog rendering). See
+[Repository Automation](xtask.md).
+
+```bash
+cargo xtask --help
+```
+
 ## Local quality gate
 
 Run everything CI runs:
