@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `rules --format markdown` emits the rule catalog table used in
+- Add `doctor`, a read-only diagnostics command that reports manifests,
+  classification evidence, excludes, effective configuration, and enabled rules.
+- Cache the composite Action's `target/` directory, keyed by runner OS, Action
+  ref, and `Cargo.lock`, with a graceful cache-miss fallback.
+- Add `main-scan.yml` to scan pushes to `main` against the committed baseline and
+  upload SARIF; scheduled updates remain reviewable through `baseline-refresh.yml`.
+- Add ADR-0005, the dependency justification and review policy.- `rules --format markdown` emits the rule catalog table used in
   `docs/rules/README.md`, so the documentation table can be generated from the
   registry in CI instead of edited by hand.
 

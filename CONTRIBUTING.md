@@ -94,6 +94,14 @@ Every rule must include:
 Rules must never fabricate findings or source locations. Conservative
 `confidence` is preferred over optimistic `confidence`.
 
+## Adding dependencies
+
+Dependencies must satisfy [ADR-0005](docs/architecture/adr/0005-dependency-justification-policy.md).
+In the pull request, state what the crate does, why an existing dependency or
+the standard library is insufficient, the transitive footprint, and any disabled
+features. `cargo deny check` must pass, and a `deny.toml` exception requires a
+reviewed justification in the same change.
+
 ## Definition of done
 
 - [ ] Code compiles with `clippy -D warnings`.

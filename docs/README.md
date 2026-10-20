@@ -8,6 +8,7 @@ Start here.
 - [Getting Started](getting-started.md) — your first scan.
 - [CLI Reference](cli.md) — every command, option, and exit code.
 - [Configuration](configuration.md) — configuration file reference.
+- [Doctor](doctor.md) — explain classification, excludes, and effective configuration.
 - [Inline Suppressions](suppressions.md) — suppress one finding with a source comment.
 
 ## Using the scanner

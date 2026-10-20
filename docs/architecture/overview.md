@@ -88,8 +88,10 @@ enable network access or arbitrary code execution).
 
 ## Dependencies
 
-Dependencies are intentionally minimal and justified. See ADR-0001 and
-`deny.toml`. Lockfiles are committed for reproducible builds.
+Dependencies are intentionally minimal and justified. See
+[ADR-0001](adr/0001-rust-core-python-tooling.md),
+[ADR-0005](adr/0005-dependency-justification-policy.md), and `deny.toml`.
+Lockfiles are committed for reproducible builds.
 
 ## Further reading
 
