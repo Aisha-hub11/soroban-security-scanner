@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `--format html`, a single self-contained report with inline CSS, no
+  JavaScript or remote resources, and HTML escaping for every source-derived
+  value.
 - Associate source files with crate roots only after verifying workspace
   membership against `members` globs, and report `CRATE-001` diagnostics for
   ambiguous nested packages instead of guessing.
