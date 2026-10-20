@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add ADR-0003, the determinism contract: canonical ordering, stable
+  fingerprints, forbidden inputs, and the tests that enforce them.
 - Add `doctor`, a read-only diagnostics command that reports manifests,
   classification evidence, excludes, effective configuration, and enabled rules.
 - Cache the composite Action's `target/` directory, keyed by runner OS, Action
