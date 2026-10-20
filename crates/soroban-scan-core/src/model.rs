@@ -202,9 +202,21 @@ pub enum DiagnosticCode {
     /// A rule override has no effect because the target is unknown or disabled.
     #[serde(rename = "CONFIG-001")]
     IneffectiveOverride,
+    /// A configured suppression is invalid and was not applied.
+    #[serde(rename = "CONFIG-002")]
+    InvalidSuppression,
     /// A baseline references a rule id that is not registered.
     #[serde(rename = "BASELINE-001")]
     BaselineUnknownRule,
+    /// A source file contains macro invocations that were not expanded.
+    #[serde(rename = "MACRO-001")]
+    UnexpandedMacro,
+    /// A source file carries a generated-code marker and remains marked.
+    #[serde(rename = "GENERATED-001")]
+    GeneratedFileMarked,
+    /// A generated source file was excluded by configuration.
+    #[serde(rename = "GENERATED-002")]
+    GeneratedFileExcluded,
 }
 
 impl DiagnosticCode {
@@ -219,7 +231,11 @@ impl DiagnosticCode {
             DiagnosticCode::RuleFileOutsideSet => "RULE-002",
             DiagnosticCode::RuleMissingEvidence => "RULE-003",
             DiagnosticCode::IneffectiveOverride => "CONFIG-001",
+            DiagnosticCode::InvalidSuppression => "CONFIG-002",
             DiagnosticCode::BaselineUnknownRule => "BASELINE-001",
+            DiagnosticCode::UnexpandedMacro => "MACRO-001",
+            DiagnosticCode::GeneratedFileMarked => "GENERATED-001",
+            DiagnosticCode::GeneratedFileExcluded => "GENERATED-002",
         }
     }
 }
@@ -246,6 +262,17 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    /// Creates an informational diagnostic carrying a stable code.
+    pub fn info(code: DiagnosticCode, message: impl Into<String>, path: Option<PathBuf>) -> Self {
+        Diagnostic {
+            code,
+            level: DiagnosticLevel::Info,
+            message: message.into(),
+            path,
+            line: None,
+        }
+    }
+
     /// Creates a warning diagnostic carrying a stable code.
     pub fn warning(
         code: DiagnosticCode,
