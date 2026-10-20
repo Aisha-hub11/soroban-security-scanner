@@ -38,7 +38,7 @@ Start here.
 ## Project
 
 - [Architecture](architecture/overview.md)
-- [Architecture Decision Records](architecture/adr/)
+- [Architecture Decision Records](architecture/adr/README.md)
 - [Compatibility](compatibility.md)
 - [Security Model](security/security-model.md)
 - [Threat Model](security/threat-model.md)

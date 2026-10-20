@@ -36,17 +36,33 @@ fn positive_and_negative_fixtures_match_expectations() {
                 meta.id
             );
 
-            let negative = std::fs::read_to_string(dir.join("negative.toml"))
-                .unwrap_or_else(|_| panic!("missing negative.toml for {}", meta.id));
-            let neg = engine::scan_manifest_str("Cargo.toml", &negative, &config, &registry)
-                .expect("manifest fixture must parse");
+            let negatives: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("negative") && name.ends_with(".toml"))
+                })
+                .collect();
             assert!(
-                !neg.findings
-                    .iter()
-                    .any(|finding| finding.rule_id == meta.id),
-                "{}: negative manifest fixture triggered the rule",
+                negatives.len() >= 3,
+                "{}: at least three negative fixtures are required",
                 meta.id
             );
+            for negative_path in negatives {
+                let negative = std::fs::read_to_string(&negative_path).unwrap();
+                let neg = engine::scan_manifest_str("Cargo.toml", &negative, &config, &registry)
+                    .expect("manifest fixture must parse");
+                assert!(
+                    !neg.findings
+                        .iter()
+                        .any(|finding| finding.rule_id == meta.id),
+                    "{}: negative manifest fixture triggered the rule",
+                    meta.id
+                );
+            }
             checked += 1;
             continue;
         }
@@ -80,8 +96,8 @@ fn positive_and_negative_fixtures_match_expectations() {
             .collect();
 
         assert!(
-            !negatives.is_empty(),
-            "{}: at least one negative fixture is required",
+            negatives.len() >= 3,
+            "{}: at least three negative fixtures are required",
             meta.id
         );
         for negative_path in negatives {

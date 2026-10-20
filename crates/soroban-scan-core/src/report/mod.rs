@@ -44,8 +44,12 @@ pub enum OutputFormat {
     Sarif,
     /// Markdown report.
     Markdown,
+    /// Self-contained HTML report.
+    Html,
     /// GitHub Actions workflow annotations (`::error`, `::warning`, `::notice`).
     Github,
+    /// JUnit XML for CI test reporters.
+    Junit,
 }
 
 impl OutputFormat {
@@ -56,7 +60,9 @@ impl OutputFormat {
             "json" => Ok(OutputFormat::Json),
             "sarif" => Ok(OutputFormat::Sarif),
             "markdown" | "md" => Ok(OutputFormat::Markdown),
+            "html" => Ok(OutputFormat::Html),
             "github" => Ok(OutputFormat::Github),
+            "junit" | "junit-xml" => Ok(OutputFormat::Junit),
             other => Err(format!("unknown output format: {other}")),
         }
     }
@@ -68,7 +74,9 @@ impl OutputFormat {
             OutputFormat::Json => "json",
             OutputFormat::Sarif => "sarif",
             OutputFormat::Markdown => "markdown",
+            OutputFormat::Html => "html",
             OutputFormat::Github => "github",
+            OutputFormat::Junit => "junit",
         }
     }
 }
@@ -81,8 +89,62 @@ pub fn render(outcome: &ScanOutcome, registry: &RuleRegistry, format: OutputForm
             .unwrap_or_else(|e| format!("{{\"error\":\"failed to serialize report: {e}\"}}")),
         OutputFormat::Sarif => render_sarif(outcome, registry),
         OutputFormat::Markdown => render_markdown(outcome),
+        OutputFormat::Html => render_html(outcome),
         OutputFormat::Github => render_github(outcome),
+        OutputFormat::Junit => render_junit(outcome),
     }
+}
+
+/// Escapes text for XML element content and attributes.
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// Renders findings as JUnit XML: one test case per finding, failures only for
+/// high and critical severities.
+pub fn render_junit(outcome: &ScanOutcome) -> String {
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    let failures = outcome
+        .findings
+        .iter()
+        .filter(|f| matches!(f.severity.as_str(), "high" | "critical"))
+        .count();
+    out.push_str(&format!(
+        "<testsuites name=\"{TOOL_NAME}\"><testsuite name=\"soroban-scan\" tests=\"{}\" failures=\"{failures}\">\n",
+        outcome.findings.len()
+    ));
+    for finding in &outcome.findings {
+        let location = format!(
+            "{}:{}:{}",
+            finding.location.file.display(),
+            finding.location.line,
+            finding.location.column.unwrap_or(1)
+        );
+        let name = escape_xml(&format!("{} {location}", finding.rule_id));
+        let classname = escape_xml(&format!("soroban-scan.{}", finding.rule_id));
+        out.push_str(&format!(
+            "<testcase classname=\"{classname}\" name=\"{name}\">"
+        ));
+        if matches!(finding.severity.as_str(), "high" | "critical") {
+            let message = escape_xml(&format!(
+                "{}: {} ({})",
+                finding.severity.as_str(),
+                finding.title,
+                finding.evidence
+            ));
+            out.push_str(&format!(
+                "<failure message=\"{message}\">{message}</failure>"
+            ));
+        }
+        out.push_str("</testcase>\n");
+    }
+    out.push_str("</testsuite></testsuites>\n");
+    out
 }
 
 /// Renders a suppression file label with the platform path separator, so
@@ -220,7 +282,12 @@ pub fn render_terminal_with_color(outcome: &ScanOutcome, color: TerminalColor) -
             out.push_str("No security findings.\n");
         }
     } else {
+        let mut current_file: Option<&std::path::Path> = None;
         for finding in &outcome.findings {
+            if current_file != Some(finding.location.file.as_path()) {
+                current_file = Some(finding.location.file.as_path());
+                out.push_str(&format!("\n{}\n", finding.location.file.display()));
+            }
             let label = format!("{:<8}", finding.severity.as_str().to_ascii_uppercase());
             out.push_str(&format!(
                 "{} {:<7} {}\n",
@@ -230,7 +297,15 @@ pub fn render_terminal_with_color(outcome: &ScanOutcome, color: TerminalColor) -
             ));
             out.push_str(&format!("         {}\n", finding.title));
             out.push_str(&format!("         confidence: {}\n", finding.confidence));
-            out.push_str(&format!("         evidence: {}\n", finding.evidence));
+            let frame = finding
+                .evidence
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(120)
+                .collect::<String>();
+            out.push_str(&format!("         evidence: {frame}\n"));
             out.push_str(&format!("         fix: {}\n\n", finding.remediation));
         }
         out.push_str(&summary_line(&outcome.findings));
@@ -886,6 +961,235 @@ fn append_markdown_suppressed(outcome: &ScanOutcome, out: &mut String) {
     }
 }
 
+/// Escapes text for HTML text and quoted-attribute contexts.
+///
+/// Every source-derived value in an HTML report passes through this function.
+/// The report never interpolates raw finding text into markup.
+fn escape_html(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+/// Inline stylesheet used by the self-contained HTML report.
+///
+/// No external fonts, stylesheets, scripts, or images are referenced, so the
+/// file renders identically offline and is safe for a strict CSP.
+const HTML_STYLE: &str = "\
+:root{color-scheme:light dark;--bg:#f7f8fa;--panel:#fff;--ink:#1c2430;--muted:#5b6776;\
+--line:#d8dee7;--critical:#8b1a1a;--high:#b3401b;--medium:#8a6100;--low:#145c8a;--info:#3f4a5a}\
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);\
+font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}\
+main{max-width:1040px;margin:0 auto;padding:2rem 1.25rem 4rem}h1{font-size:1.65rem;margin:0 0 .35rem}\
+h2{font-size:1.15rem;margin:2rem 0 .6rem;border-bottom:1px solid var(--line);padding-bottom:.35rem}\
+.meta{color:var(--muted);margin:.2rem 0}.cards{display:grid;gap:.6rem;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin:1rem 0}\
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.7rem .8rem}\
+.card .label{color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em}\
+.card .value{font-size:1.35rem;font-weight:650}\
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}\
+th,td{text-align:left;padding:.5rem .65rem;border-bottom:1px solid var(--line);vertical-align:top}\
+th{font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}\
+tr:last-child td{border-bottom:0}\
+.finding{background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--muted);border-radius:8px;padding:1rem;margin:.8rem 0}\
+.finding.critical{border-left-color:var(--critical)}.finding.high{border-left-color:var(--high)}\
+.finding.medium{border-left-color:var(--medium)}.finding.low{border-left-color:var(--low)}\
+.finding.info{border-left-color:var(--info)}\
+.finding h3{margin:0 0 .45rem;font-size:1.05rem}.finding h3 .rule{color:var(--muted);font-weight:500}\
+.badge{display:inline-block;border:1px solid currentColor;border-radius:999px;padding:.05rem .5rem;font-size:.75rem;text-transform:uppercase;letter-spacing:.04em}\
+dl{display:grid;grid-template-columns:max-content 1fr;gap:.15rem .7rem;margin:.55rem 0}\
+dt{color:var(--muted)}dd{margin:0}\
+pre{white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:.6rem;margin:.35rem 0}\
+code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em}\
+ul.references{margin:.3rem 0 0;padding-left:1.1rem}.note{color:var(--muted);font-style:italic}\
+@media (prefers-color-scheme:dark){:root{--bg:#12161c;--panel:#1a2028;--ink:#e6eaf0;--muted:#a3adba;--line:#2c3541}}\
+";
+
+/// Renders a self-contained HTML report.
+///
+/// The document inlines its CSS and contains no JavaScript or remote resources.
+/// All finding, project, and suppression text is escaped, so crafted evidence
+/// or source paths cannot inject markup.
+pub fn render_html(outcome: &ScanOutcome) -> String {
+    let counts = severity_counts(&outcome.findings);
+    let mut out = String::new();
+    out.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
+    out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+    out.push_str("<title>Soroban Security Scan</title>\n<style>");
+    out.push_str(HTML_STYLE);
+    out.push_str("</style>\n</head>\n<body>\n<main>\n");
+    out.push_str("<h1>Soroban Security Scan</h1>\n");
+    out.push_str(&format!(
+        "<p class=\"meta\"><strong>{}</strong> {} &middot; Project <code>{}</code> ({}) &middot; \
+         Files analyzed: {}</p>\n",
+        TOOL_NAME,
+        crate::VERSION,
+        escape_html(&outcome.project.root.display().to_string()),
+        escape_html(&outcome.project.kind.to_string()),
+        outcome.stats.files_analyzed
+    ));
+
+    out.push_str("<div class=\"cards\">\n");
+    for severity in [
+        Severity::Critical,
+        Severity::High,
+        Severity::Medium,
+        Severity::Low,
+        Severity::Info,
+    ] {
+        out.push_str(&format!(
+            "<div class=\"card\"><div class=\"label\">{}</div><div class=\"value\">{}</div></div>\n",
+            severity,
+            counts[severity.rank() as usize]
+        ));
+    }
+    out.push_str("</div>\n");
+    out.push_str(&format!(
+        "<p class=\"meta\">{} finding(s) &middot; {} suppressed (excluded from the gate)</p>\n",
+        outcome.findings.len(),
+        outcome.stats.findings_suppressed
+    ));
+
+    if outcome.findings.is_empty() {
+        out.push_str("<h2>Findings</h2>\n<p class=\"note\">No security findings.</p>\n");
+    } else {
+        out.push_str("<h2>Summary</h2>\n<table><thead><tr><th>Severity</th><th>Count</th></tr></thead><tbody>\n");
+        for severity in [
+            Severity::Critical,
+            Severity::High,
+            Severity::Medium,
+            Severity::Low,
+            Severity::Info,
+        ] {
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td></tr>\n",
+                severity,
+                counts[severity.rank() as usize]
+            ));
+        }
+        out.push_str("</tbody></table>\n");
+
+        out.push_str("<h2>Top rules</h2>\n<table><thead><tr><th>Rule</th><th>Count</th></tr></thead><tbody>\n");
+        for (rule, count) in rule_counts(&outcome.findings) {
+            out.push_str(&format!(
+                "<tr><td><code>{}</code></td><td>{count}</td></tr>\n",
+                escape_html(&rule)
+            ));
+        }
+        out.push_str("</tbody></table>\n");
+
+        out.push_str("<h2>Categories</h2>\n<table><thead><tr><th>Category</th><th>Count</th></tr></thead><tbody>\n");
+        for (category, count) in category_counts(&outcome.findings) {
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{count}</td></tr>\n",
+                escape_html(category)
+            ));
+        }
+        out.push_str("</tbody></table>\n");
+    }
+
+    append_html_truncation(outcome, &mut out);
+
+    if !outcome.findings.is_empty() {
+        out.push_str("<h2>Findings</h2>\n");
+        for finding in &outcome.findings {
+            out.push_str(&format!(
+                "<article class=\"finding {}\">\n<h3><span class=\"rule\">{} &middot;</span> {}</h3>\n",
+                finding.severity.as_str(),
+                escape_html(&finding.rule_id),
+                escape_html(&finding.title)
+            ));
+            out.push_str(&format!(
+                "<p><span class=\"badge\">{}</span> <span class=\"badge\">{}</span> <span class=\"badge\">{}</span></p>\n",
+                escape_html(&finding.severity.to_string()),
+                escape_html(&finding.confidence.to_string()),
+                escape_html(finding.category.as_str())
+            ));
+            out.push_str(&format!(
+                "<dl><dt>Location</dt><dd><code>{}</code></dd>\n",
+                escape_html(&finding.location.display_label())
+            ));
+            out.push_str(&format!(
+                "<dt>Description</dt><dd>{}</dd></dl>\n",
+                escape_html(&finding.description)
+            ));
+            out.push_str(&format!(
+                "<p><strong>Evidence</strong></p><pre><code>{}</code></pre>\n",
+                escape_html(&finding.evidence)
+            ));
+            out.push_str(&format!(
+                "<p><strong>Remediation</strong></p><p>{}</p>\n",
+                escape_html(&finding.remediation)
+            ));
+            if !finding.references.is_empty() {
+                out.push_str("<p><strong>References</strong></p><ul class=\"references\">\n");
+                for reference in &finding.references {
+                    out.push_str(&format!(
+                        "<li><code>{}</code></li>\n",
+                        escape_html(reference)
+                    ));
+                }
+                out.push_str("</ul>\n");
+            }
+            out.push_str("</article>\n");
+        }
+    }
+
+    append_html_suppressed(outcome, &mut out);
+    out.push_str("</main>\n</body>\n</html>\n");
+    out
+}
+
+/// Appends the explicit truncation notice to an HTML report.
+fn append_html_truncation(outcome: &ScanOutcome, out: &mut String) {
+    if let Some(truncation) = outcome.truncation {
+        out.push_str(&format!(
+            "<p class=\"note\">Truncated: {} more finding(s) not shown (--max-findings {}).</p>\n",
+            truncation.omitted, truncation.shown
+        ));
+    }
+}
+
+/// Appends the suppressed-findings section to an HTML report.
+fn append_html_suppressed(outcome: &ScanOutcome, out: &mut String) {
+    if outcome.suppressed.is_empty() {
+        return;
+    }
+    out.push_str("<h2>Suppressed findings</h2>\n");
+    out.push_str(
+        "<p class=\"note\">Suppressed findings are excluded from the gate and always reported.</p>\n",
+    );
+    out.push_str("<table><thead><tr><th>Finding</th><th>Location</th><th>Suppressed by</th><th>Reason</th></tr></thead><tbody>\n");
+    for suppressed in &outcome.suppressed {
+        out.push_str(&format!(
+            "<tr><td><code>{}</code> {}</td><td><code>{}</code></td><td><code>{}:{}</code> \
+             (<code>ignore {}</code>)</td><td>{}</td></tr>\n",
+            escape_html(&suppressed.finding.rule_id),
+            escape_html(&suppressed.finding.title),
+            escape_html(&suppressed.finding.location.display_label()),
+            escape_html(&display_suppression_file(&suppressed.suppression.file)),
+            suppressed.suppression.line,
+            escape_html(&suppressed.suppression.rules),
+            escape_html(
+                suppressed
+                    .suppression
+                    .reason
+                    .as_deref()
+                    .unwrap_or("(none given)")
+            )
+        ));
+    }
+    out.push_str("</tbody></table>\n");
+}
+
 /// Renders the rule catalog for `soroban-scan rules`.
 pub fn render_rule_list(metas: &[&RuleMetadata], format: OutputFormat) -> String {
     match format {
@@ -1208,9 +1512,50 @@ mod tests {
     fn output_format_parsing() {
         assert_eq!(OutputFormat::parse("SARIF").unwrap(), OutputFormat::Sarif);
         assert_eq!(OutputFormat::parse("md").unwrap(), OutputFormat::Markdown);
+        assert_eq!(OutputFormat::parse("html").unwrap(), OutputFormat::Html);
         assert_eq!(OutputFormat::parse("github").unwrap(), OutputFormat::Github);
+        assert_eq!(OutputFormat::Html.as_str(), "html");
         assert_eq!(OutputFormat::Github.as_str(), "github");
         assert!(OutputFormat::parse("xml").is_err());
+    }
+
+    #[test]
+    fn html_report_is_self_contained_and_escapes_injection() {
+        let (mut outcome, _) = sample();
+        assert!(!outcome.findings.is_empty(), "fixture needs a finding");
+        outcome.project.root = std::path::PathBuf::from("<svg onload=alert(0)>");
+        outcome.findings[0].rule_id = "SS-<script>alert(1)</script>".to_string();
+        outcome.findings[0].title = "<img src=x onerror=alert(2)>".to_string();
+        outcome.findings[0].evidence = "<script>steal()</script> & \"quoted\" 'single'".to_string();
+        outcome.findings[0].remediation = "</pre><iframe src=//evil.test></iframe>".to_string();
+
+        let html = render_html(&outcome);
+
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<style>"));
+        assert!(html.ends_with("</html>\n"));
+
+        // No source-derived markup survives.
+        assert!(!html.contains("<script"));
+        assert!(!html.contains("<img"));
+        assert!(!html.contains("<svg"));
+        assert!(!html.contains("<iframe"));
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains("&lt;img src=x onerror=alert(2)&gt;"));
+        assert!(html.contains("&amp; &quot;quoted&quot; &#39;single&#39;"));
+
+        // No remote resources or scripts are referenced.
+        assert!(!html.contains("<link"));
+        assert!(!html.contains("src=\"http"));
+        assert!(!html.contains("@import"));
+    }
+
+    #[test]
+    fn html_report_handles_the_empty_state() {
+        let (mut outcome, _) = sample();
+        outcome.findings.clear();
+        let html = render_html(&outcome);
+        assert!(html.contains("No security findings."));
     }
 
     #[test]
@@ -1474,6 +1819,9 @@ mod tests {
         let markdown = render_markdown(&outcome);
         assert!(markdown.contains(&format!("{} more finding(s)", total - 1)));
 
+        let html = render_html(&outcome);
+        assert!(html.contains(&format!("{} more finding(s)", total - 1)));
+
         let github = render_github(&outcome);
         assert!(github.contains("::notice::"));
         assert!(github.contains(&format!("{} more finding(s)", total - 1)));
@@ -1499,6 +1847,7 @@ mod tests {
         assert!(!render_json(&outcome).unwrap().contains('\u{1b}'));
         assert!(!render_sarif(&outcome, &registry).contains('\u{1b}'));
         assert!(!render_markdown(&outcome).contains('\u{1b}'));
+        assert!(!render_html(&outcome).contains('\u{1b}'));
         assert!(!render_github(&outcome).contains('\u{1b}'));
     }
 

@@ -1,0 +1,98 @@
+name: Publish crates
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Package and verify only; do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crates-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  verify:
+    name: Verify package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Require a version tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::Publishing requires a v* tag; workflow_dispatch must run against a tag."
+            exit 1
+          fi
+
+      - name: Verify tag matches the workspace version
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+
+          with open("Cargo.toml", "rb") as handle:
+              version = tomllib.load(handle)["workspace"]["package"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          expected = tag[1:] if tag.startswith("v") else tag
+          if expected != version:
+              raise SystemExit(
+                  f"tag {tag!r} does not match workspace version {version!r}"
+              )
+          print(f"publishing {version}")
+          PY
+
+      - name: Verify core package (cargo publish --dry-run)
+        run: cargo publish --dry-run -p soroban-scan-core --locked
+
+      # The CLI depends on the same-version core crate. Its dry-run can only
+      # resolve against crates.io after core is published, so the publish job
+      # below runs the CLI dry-run once the index has caught up.
+
+  publish:
+    name: Publish core then CLI
+    needs: verify
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish soroban-scan-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p soroban-scan-core --locked
+
+      - name: Wait for the core crate to be available
+        run: |
+          for attempt in $(seq 1 10); do
+            if cargo publish --dry-run -p soroban-scan-cli --locked; then
+              echo "soroban-scan-core is available"
+              exit 0
+            fi
+            echo "core not indexed yet (attempt ${attempt}/10); retrying in 30s"
+            sleep 30
+          done
+          echo "::error::soroban-scan-core did not become available in time"
+          exit 1
+
+      - name: Publish soroban-scan-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p soroban-scan-cli --locked

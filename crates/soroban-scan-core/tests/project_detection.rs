@@ -58,3 +58,43 @@ fn metadata_loading_is_deterministic() {
         "metadata output must be byte-for-byte deterministic"
     );
 }
+
+#[test]
+fn nested_nonmember_package_is_reported_as_ambiguous() {
+    let loaded = project::load(&fixture("nested-workspace"), &DiscoveryOptions::default()).unwrap();
+
+    let member = loaded
+        .sources
+        .iter()
+        .find(|source| source.path.ends_with("member/src/lib.rs"))
+        .expect("member source");
+    assert_eq!(member.module_path, "crate");
+
+    let ambiguous = loaded
+        .sources
+        .iter()
+        .find(|source| source.path.ends_with("nested/src/deep.rs"))
+        .expect("nested source");
+    // The nearest manifest is not a workspace member, so the member crate root
+    // (not the nested one) is used and the association is reported.
+    assert_eq!(ambiguous.module_path, "crate::deep");
+
+    let ambiguous_diagnostics: Vec<_> = loaded
+        .project
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == soroban_scan_core::model::DiagnosticCode::AmbiguousCrateRoot
+        })
+        .collect();
+    assert_eq!(ambiguous_diagnostics.len(), 2);
+    assert!(ambiguous_diagnostics
+        .iter()
+        .all(
+            |diagnostic| diagnostic
+                .path
+                .as_ref()
+                .is_some_and(|path| path.ends_with("nested/src/lib.rs")
+                    || path.ends_with("nested/src/deep.rs"))
+        ));
+}

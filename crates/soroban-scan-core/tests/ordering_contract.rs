@@ -210,6 +210,7 @@ fn every_format_receives_the_same_order() {
         OutputFormat::Json,
         OutputFormat::Sarif,
         OutputFormat::Markdown,
+        OutputFormat::Html,
     ] {
         let text = report::render(&outcome, &registry, format);
         let first = text.find("marker-alpha").expect("first finding");

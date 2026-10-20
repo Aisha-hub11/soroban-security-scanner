@@ -190,6 +190,9 @@ pub enum DiagnosticCode {
     /// A source file could not be read.
     #[serde(rename = "SOURCE-002")]
     SourceUnreadable,
+    /// A source file's crate root could not be determined unambiguously.
+    #[serde(rename = "CRATE-001")]
+    AmbiguousCrateRoot,
     /// A rule produced a location that is not a safe relative path.
     #[serde(rename = "RULE-001")]
     RuleUnsafeLocation,
@@ -199,6 +202,12 @@ pub enum DiagnosticCode {
     /// A rule produced a finding without evidence.
     #[serde(rename = "RULE-003")]
     RuleMissingEvidence,
+    /// A rule panicked; the scan continued without its findings.
+    #[serde(rename = "RULE-004")]
+    RulePanicked,
+    /// A rule exceeded its configured execution budget.
+    #[serde(rename = "RULE-005")]
+    RuleTimeBudgetExceeded,
     /// A rule override has no effect because the target is unknown or disabled.
     #[serde(rename = "CONFIG-001")]
     IneffectiveOverride,
@@ -227,9 +236,12 @@ impl DiagnosticCode {
             DiagnosticCode::ManifestUnreadable => "MANIFEST-001",
             DiagnosticCode::SourceTooLarge => "SOURCE-001",
             DiagnosticCode::SourceUnreadable => "SOURCE-002",
+            DiagnosticCode::AmbiguousCrateRoot => "CRATE-001",
             DiagnosticCode::RuleUnsafeLocation => "RULE-001",
             DiagnosticCode::RuleFileOutsideSet => "RULE-002",
             DiagnosticCode::RuleMissingEvidence => "RULE-003",
+            DiagnosticCode::RulePanicked => "RULE-004",
+            DiagnosticCode::RuleTimeBudgetExceeded => "RULE-005",
             DiagnosticCode::IneffectiveOverride => "CONFIG-001",
             DiagnosticCode::InvalidSuppression => "CONFIG-002",
             DiagnosticCode::BaselineUnknownRule => "BASELINE-001",

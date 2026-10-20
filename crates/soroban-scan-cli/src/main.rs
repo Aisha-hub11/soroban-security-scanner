@@ -78,6 +78,9 @@ enabled = []
 # severity_overrides = {}
 # Per-rule confidence overrides, for example: { "SS-007" = "low" }
 # confidence_overrides = {}
+# Best-effort per-rule execution budget in milliseconds. Disabled by default.
+# A rule that exceeds the budget is reported and its findings are discarded.
+# time_budget_ms = 5000
 
 [ai]
 # Optional assistance layer. Disabled by default.
@@ -94,6 +97,7 @@ enum FormatArg {
     Json,
     Sarif,
     Markdown,
+    Html,
     Github,
 }
 
@@ -104,6 +108,7 @@ impl From<FormatArg> for OutputFormat {
             FormatArg::Json => OutputFormat::Json,
             FormatArg::Sarif => OutputFormat::Sarif,
             FormatArg::Markdown => OutputFormat::Markdown,
+            FormatArg::Html => OutputFormat::Html,
             FormatArg::Github => OutputFormat::Github,
         }
     }
@@ -263,6 +268,11 @@ struct ScanArgs {
     /// Skip items gated behind `#[cfg(test)]` and test directories.
     #[arg(long)]
     exclude_tests: bool,
+
+    /// Best-effort per-rule execution budget in milliseconds. A rule that
+    /// overruns is reported and its findings are discarded. Disabled by default.
+    #[arg(long, value_name = "MS")]
+    rule_time_budget_ms: Option<u64>,
 
     /// Configuration file to use.
     #[arg(long, value_name = "FILE")]
@@ -518,6 +528,9 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
     config.exclude_tests |= args.exclude_tests;
     config.rules.disabled.extend(args.disable.iter().cloned());
     config.rules.enabled.extend(args.rule.iter().cloned());
+    if let Some(budget) = args.rule_time_budget_ms {
+        config.rules.rule_time_budget_ms = Some(budget);
+    }
 
     validate_rule_ids(&config, registry)?;
 

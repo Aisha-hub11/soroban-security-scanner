@@ -30,7 +30,7 @@ roots in one run.
 
 | Option | Description |
 | ------ | ----------- |
-| `--format <terminal\|json\|sarif\|markdown\|github>` | Output format (default `terminal`). |
+| `--format <terminal\|json\|sarif\|markdown\|html\|github>` | Output format (default `terminal`). |
 | `--output <FILE>` | Write the report to a file instead of stdout. |
 | `--min-severity <LEVEL>` | Only report findings at or above this severity. |
 | `--min-confidence <LEVEL>` | Only report findings at or above this confidence. |
@@ -134,7 +134,8 @@ terminal and reaches 64 KiB, `--pager auto` (the default) sends it through
 `$PAGER` (falling back to `less -R`, or `more` on Windows) so it can be scrolled
 and searched.
 
-- Paging never applies to `--format json`, `sarif`, `markdown`, or `github`;
+- Paging never applies to `--format json`, `sarif`, `markdown`, `html`, or
+  `github`;
   machine output is always written verbatim.
 - When stdout is **not** a terminal (a pipe or a redirect such as
   `soroban-scan scan . > report.txt`), nothing is paged — the full report is
@@ -198,6 +199,9 @@ soroban-scan scan ./contracts --format json --output report.json --fail-on none
 
 # SARIF for GitHub code scanning
 soroban-scan scan ./contracts --format sarif --output results.sarif
+
+# Self-contained HTML for sharing with reviewers
+soroban-scan scan ./contracts --format html --output report.html
 
 # Only high and critical findings
 soroban-scan scan ./contracts --min-severity high
@@ -315,6 +319,10 @@ network access.
 - **markdown** — report suitable for pull requests and documentation. The
   summary includes a severity table, the most frequent rule ids, and the
   categories with the most findings, each sorted deterministically.
+- **html** — a single self-contained file with inline CSS, no JavaScript, and no
+  remote resources. All source-derived text (titles, evidence, remediation,
+  paths, suppressions) is HTML-escaped, so crafted findings cannot inject
+  markup. Suitable for sharing with reviewers who do not use a terminal.
 - **github** — GitHub Actions workflow-command annotations (`::error`,
   `::warning`, `::notice`) with escaped paths, titles, and evidence.
 

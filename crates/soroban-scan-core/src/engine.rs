@@ -6,7 +6,9 @@
 //! result deterministically.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use globset::Glob;
 use serde::Serialize;
@@ -27,6 +29,10 @@ pub struct ScanStats {
     pub rules_run: usize,
     /// Number of rules skipped by configuration.
     pub rules_skipped: usize,
+    /// Number of rules that panicked and were isolated.
+    pub rules_failed: usize,
+    /// Number of rules abandoned after exceeding their execution budget.
+    pub rules_timed_out: usize,
     /// Number of source files analyzed.
     pub files_analyzed: usize,
     /// Number of source files that parsed successfully.
@@ -386,6 +392,8 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
     };
     stats.files_failed = stats.files_analyzed - stats.files_parsed;
 
+    let budget = config.rules.rule_time_budget_ms.map(Duration::from_millis);
+
     for rule in registry.rules() {
         let meta = rule.metadata();
         if !rule.enabled_by_default() || !config.rules.is_rule_enabled(meta.id, meta.category) {
@@ -393,7 +401,42 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
             continue;
         }
         stats.rules_run += 1;
-        rule.analyze(&ctx, &mut findings);
+
+        let started = Instant::now();
+        let mut rule_findings = Vec::new();
+        match catch_unwind(AssertUnwindSafe(|| rule.analyze(&ctx, &mut rule_findings))) {
+            Ok(()) => {
+                if let Some(limit) = budget {
+                    if started.elapsed() > limit {
+                        // Rust cannot preempt a running rule and the parsed AST
+                        // is not thread-safe, so the budget is best-effort:
+                        // discard everything the rule produced after overrunning
+                        // and report the overrun.
+                        stats.rules_timed_out += 1;
+                        diagnostics.push(Diagnostic::warning(
+                            DiagnosticCode::RuleTimeBudgetExceeded,
+                            format!(
+                                "rule {} exceeded its {} ms execution budget; \
+                                 its findings were discarded",
+                                meta.id,
+                                limit.as_millis()
+                            ),
+                            None,
+                        ));
+                        continue;
+                    }
+                }
+                findings.extend(rule_findings);
+            }
+            Err(_) => {
+                stats.rules_failed += 1;
+                diagnostics.push(Diagnostic::error(
+                    DiagnosticCode::RulePanicked,
+                    format!("rule {} panicked; its findings were discarded", meta.id),
+                    None,
+                ));
+            }
+        }
     }
 
     stats.findings_raw = findings.len();
@@ -1406,6 +1449,108 @@ mod tests {
             outcome.suppressed[0].suppression.reason.as_deref(),
             Some("generated code")
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    struct SleepingRule {
+        meta: RuleMetadata,
+    }
+
+    impl SleepingRule {
+        fn new() -> Self {
+            SleepingRule {
+                meta: RuleMetadata::new(
+                    "SS-901",
+                    "Sleeping rule",
+                    "slow test rule",
+                    Category::Authorization,
+                    Severity::Low,
+                    Confidence::Low,
+                    "n/a",
+                ),
+            }
+        }
+    }
+
+    impl Rule for SleepingRule {
+        fn metadata(&self) -> &RuleMetadata {
+            &self.meta
+        }
+        fn analyze(&self, _ctx: &AnalysisContext<'_>, _out: &mut Vec<Finding>) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    struct PanickingRule {
+        meta: RuleMetadata,
+    }
+
+    impl PanickingRule {
+        fn new() -> Self {
+            PanickingRule {
+                meta: RuleMetadata::new(
+                    "SS-902",
+                    "Panicking rule",
+                    "panicking test rule",
+                    Category::Authorization,
+                    Severity::Low,
+                    Confidence::Low,
+                    "n/a",
+                ),
+            }
+        }
+    }
+
+    impl Rule for PanickingRule {
+        fn metadata(&self) -> &RuleMetadata {
+            &self.meta
+        }
+        fn analyze(&self, _ctx: &AnalysisContext<'_>, _out: &mut Vec<Finding>) {
+            panic!("intentional test panic");
+        }
+    }
+
+    #[test]
+    fn slow_rule_findings_are_discarded_at_the_execution_budget() {
+        let (root, loaded) = project_with_source("slow-rule", "fn a() {}\n");
+        let mut registry = RuleRegistry::new();
+        registry.register(Box::new(SleepingRule::new())).unwrap();
+        let config = ScanConfig {
+            rules: crate::config::RulesConfig {
+                rule_time_budget_ms: Some(10),
+                ..crate::config::RulesConfig::default()
+            },
+            ..ScanConfig::default()
+        };
+
+        let outcome = scan(&loaded, &registry, &config);
+
+        assert_eq!(outcome.stats.rules_run, 1);
+        assert_eq!(outcome.stats.rules_timed_out, 1);
+        assert!(outcome.findings.is_empty());
+        assert!(outcome
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::RuleTimeBudgetExceeded));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn panicking_rules_are_isolated_and_reported() {
+        let (root, loaded) = project_with_source("panic-rule", "fn a() {}\n");
+        let mut registry = RuleRegistry::new();
+        registry.register(Box::new(PanickingRule::new())).unwrap();
+
+        let outcome = scan(&loaded, &registry, &ScanConfig::default());
+
+        assert_eq!(outcome.stats.rules_run, 1);
+        assert_eq!(outcome.stats.rules_failed, 1);
+        assert_eq!(outcome.stats.rules_timed_out, 0);
+        assert!(outcome.findings.is_empty());
+        assert!(outcome
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::RulePanicked));
         let _ = std::fs::remove_dir_all(&root);
     }
 

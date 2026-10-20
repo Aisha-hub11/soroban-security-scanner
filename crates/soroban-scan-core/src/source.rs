@@ -73,6 +73,51 @@ impl ItemKind {
     }
 }
 
+/// Kind of a Soroban contract type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractTypeKind {
+    /// A struct annotated with `#[contracttype]`.
+    Struct,
+    /// An enum annotated with `#[contracttype]` or `#[contracterror]`.
+    Enum,
+}
+
+impl ContractTypeKind {
+    /// Stable lowercase name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ContractTypeKind::Struct => "struct",
+            ContractTypeKind::Enum => "enum",
+        }
+    }
+}
+
+/// A struct or enum that participates in the contract's serialized interface.
+///
+/// Types annotated with `#[contracttype]` define stored and transported data,
+/// while `#[contracterror]` enums define the contract's error variants. Both are
+/// kept separate from function facts because detectors need the data model
+/// independently of any function body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractTypeSummary {
+    /// Type name.
+    pub name: String,
+    /// Whether the declaration is a struct or an enum.
+    pub kind: ContractTypeKind,
+    /// Declared visibility (`pub`).
+    pub is_public: bool,
+    /// Attribute path strings (for example `contracttype`).
+    pub attributes: Vec<String>,
+    /// Variant names for enums; empty for structs.
+    pub variants: Vec<String>,
+    /// 1-based line.
+    pub line: usize,
+    /// 1-based column.
+    pub column: usize,
+    /// 1-based end line.
+    pub end_line: usize,
+}
+
 /// A function parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamSummary {
@@ -141,6 +186,12 @@ pub struct FunctionSummary {
     pub return_type: Option<String>,
     /// Enclosing impl/trait name, if any.
     pub in_impl: Option<String>,
+    /// Rendered trait path when the function is defined in a trait impl.
+    ///
+    /// Inherent impl methods and free functions have `None`. Trait
+    /// definitions also have `None` because their methods are not bound to a
+    /// concrete implementing type.
+    pub trait_path: Option<String>,
     /// Attribute path strings on the enclosing impl block.
     pub impl_attributes: Vec<String>,
     /// True when the function is a `const fn`.
@@ -165,6 +216,8 @@ pub struct ItemSummary {
     pub end_line: usize,
     /// Whether the item is `pub`.
     pub is_public: bool,
+    /// Rendered trait path for `impl Trait for Type` blocks, if any.
+    pub trait_path: Option<String>,
     /// Attribute path strings.
     pub attributes: Vec<String>,
 }
@@ -298,6 +351,8 @@ pub struct ParsedSource {
     pub macro_invocations: Vec<MacroInvocation>,
     /// Lexical generated-code markers.
     pub generated_markers: Vec<GeneratedMarker>,
+    /// `#[contracttype]`/`#[contracterror]` structs and enums.
+    pub contract_types: Vec<ContractTypeSummary>,
     /// Locations of contract definitions, formatted as `path:line`.
     pub contract_definitions: Vec<String>,
     /// Inline suppression directives detected in the file.
@@ -426,6 +481,7 @@ fn record_contract_attrs(
 
 struct ImplContext {
     name: String,
+    trait_path: Option<String>,
     attributes: Vec<String>,
 }
 
@@ -468,6 +524,7 @@ fn make_function(
         params: params_of(sig),
         return_type: return_of(sig),
         in_impl: impl_ctx.map(|c| c.name.clone()),
+        trait_path: impl_ctx.and_then(|c| c.trait_path.clone()),
         impl_attributes,
         is_const: sig.constness.is_some(),
         is_contract_entry_point,
@@ -512,6 +569,7 @@ fn walk_items(
     out_items: &mut Vec<ItemSummary>,
     out_functions: &mut Vec<FunctionSummary>,
     out_constants: &mut Vec<ConstSummary>,
+    out_contract_types: &mut Vec<ContractTypeSummary>,
     out_contract: &mut Vec<String>,
 ) {
     for item in items {
@@ -539,15 +597,22 @@ fn walk_items(
             }
             syn::Item::Impl(imp) => {
                 let name = imp.self_ty.to_token_stream().to_string();
-                out_items.push(item_summary(
+                let trait_path = imp
+                    .trait_
+                    .as_ref()
+                    .map(|(_, path, _)| path.to_token_stream().to_string());
+                let mut summary = item_summary(
                     ItemKind::Impl,
                     name.clone(),
                     &attrs,
                     false,
                     (line, column, end_line),
-                ));
+                );
+                summary.trait_path = trait_path.clone();
+                out_items.push(summary);
                 let ctx = ImplContext {
                     name,
+                    trait_path,
                     attributes: attribute_paths(&attrs),
                 };
                 for impl_item in &imp.items {
@@ -607,6 +672,7 @@ fn walk_items(
                 ));
                 let ctx = ImplContext {
                     name,
+                    trait_path: None,
                     attributes: attribute_paths(&attrs),
                 };
                 for trait_item in &tr.items {
@@ -662,24 +728,50 @@ fn walk_items(
                         out_items,
                         out_functions,
                         out_constants,
+                        out_contract_types,
                         out_contract,
                     );
                 }
             }
-            syn::Item::Struct(s) => out_items.push(item_summary(
-                ItemKind::Struct,
-                s.ident.to_string(),
-                &attrs,
-                vis_is_public(&s.vis),
-                (line, column, end_line),
-            )),
-            syn::Item::Enum(e) => out_items.push(item_summary(
-                ItemKind::Enum,
-                e.ident.to_string(),
-                &attrs,
-                vis_is_public(&e.vis),
-                (line, column, end_line),
-            )),
+            syn::Item::Struct(s) => {
+                out_items.push(item_summary(
+                    ItemKind::Struct,
+                    s.ident.to_string(),
+                    &attrs,
+                    vis_is_public(&s.vis),
+                    (line, column, end_line),
+                ));
+                if has_contract_type_attr(&attrs) {
+                    out_contract_types.push(contract_type_summary(
+                        s.ident.to_string(),
+                        ContractTypeKind::Struct,
+                        &attrs,
+                        vis_is_public(&s.vis),
+                        Vec::new(),
+                        (line, column, end_line),
+                    ));
+                }
+            }
+            syn::Item::Enum(e) => {
+                out_items.push(item_summary(
+                    ItemKind::Enum,
+                    e.ident.to_string(),
+                    &attrs,
+                    vis_is_public(&e.vis),
+                    (line, column, end_line),
+                ));
+                if has_contract_type_attr(&attrs) {
+                    let variants = e.variants.iter().map(|v| v.ident.to_string()).collect();
+                    out_contract_types.push(contract_type_summary(
+                        e.ident.to_string(),
+                        ContractTypeKind::Enum,
+                        &attrs,
+                        vis_is_public(&e.vis),
+                        variants,
+                        (line, column, end_line),
+                    ));
+                }
+            }
             syn::Item::Union(u) => out_items.push(item_summary(
                 ItemKind::Union,
                 u.ident.to_string(),
@@ -819,7 +911,40 @@ fn item_summary(
         column: span.1,
         end_line: span.2,
         is_public,
+        trait_path: None,
         attributes: attribute_paths(attrs),
+    }
+}
+
+/// Returns true when the attributes include `#[contracttype]` or
+/// `#[contracterror]`, including fully qualified forms such as
+/// `#[soroban_sdk::contracttype]`.
+fn has_contract_type_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        matches!(
+            attribute_path(attr).rsplit("::").next(),
+            Some("contracttype" | "contracterror")
+        )
+    })
+}
+
+fn contract_type_summary(
+    name: String,
+    kind: ContractTypeKind,
+    attrs: &[syn::Attribute],
+    is_public: bool,
+    variants: Vec<String>,
+    span: (usize, usize, usize),
+) -> ContractTypeSummary {
+    ContractTypeSummary {
+        name,
+        kind,
+        is_public,
+        attributes: attribute_paths(attrs),
+        variants,
+        line: span.0,
+        column: span.1,
+        end_line: span.2,
     }
 }
 
@@ -1334,6 +1459,7 @@ pub fn parse_source_with_options(
             macro_definitions: Vec::new(),
             macro_invocations: Vec::new(),
             generated_markers,
+            contract_types: Vec::new(),
             contract_definitions: Vec::new(),
             suppressions: Vec::new(),
         };
@@ -1347,6 +1473,7 @@ pub fn parse_source_with_options(
             let mut items = Vec::new();
             let mut functions = Vec::new();
             let mut constants = Vec::new();
+            let mut contract_types = Vec::new();
             let mut contract_definitions = Vec::new();
             walk_items(
                 &file.items,
@@ -1356,6 +1483,7 @@ pub fn parse_source_with_options(
                 &mut items,
                 &mut functions,
                 &mut constants,
+                &mut contract_types,
                 &mut contract_definitions,
             );
             let (macro_definitions, macro_invocations) = macro_inventory(&file);
@@ -1371,6 +1499,7 @@ pub fn parse_source_with_options(
                 macro_definitions,
                 macro_invocations,
                 generated_markers,
+                contract_types,
                 contract_definitions,
                 suppressions,
             }
@@ -1386,6 +1515,7 @@ pub fn parse_source_with_options(
             macro_definitions: Vec::new(),
             macro_invocations: Vec::new(),
             generated_markers,
+            contract_types: Vec::new(),
             contract_definitions: Vec::new(),
             suppressions: Vec::new(),
         },
@@ -1512,12 +1642,127 @@ fn collect_item_spans(items: &[syn::Item], out: &mut Vec<(usize, usize)>) {
     }
 }
 
-fn nearest_crate_root(path: &Path, crate_roots: &[PathBuf]) -> Option<PathBuf> {
-    crate_roots
+/// A manifest directory that may act as a crate root.
+#[derive(Debug, Clone)]
+struct CrateRootCandidate {
+    /// Directory containing the manifest.
+    dir: PathBuf,
+    /// Whether the manifest is a member of its enclosing workspace.
+    ///
+    /// A standalone package (no enclosing workspace) is always a member of its
+    /// own one-package universe. A package nested inside a workspace is only a
+    /// crate root when its directory matches one of that workspace's `members`
+    /// globs; otherwise Cargo does not consider it part of the workspace.
+    is_member: bool,
+}
+
+/// Builds crate-root candidates and verifies workspace membership (#47).
+///
+/// Nested packages that are not matched by an enclosing workspace's `members`
+/// globs must not win the "nearest manifest" race. Treating them as crate roots
+/// produces module paths for files the workspace does not actually include.
+fn crate_root_candidates(manifests: &[crate::model::Manifest]) -> Vec<CrateRootCandidate> {
+    use globset::GlobBuilder;
+
+    // Enclosing workspaces, keyed by directory. Invalid member globs are
+    // ignored: they cannot prove membership, so the package fails closed and is
+    // reported as ambiguous rather than silently accepted.
+    let workspaces: Vec<(PathBuf, Vec<globset::GlobMatcher>)> = manifests
         .iter()
-        .filter(|root| path.starts_with(root))
-        .max_by_key(|root| root.components().count())
-        .cloned()
+        .filter_map(|manifest| {
+            let workspace = manifest.workspace.as_ref()?;
+            let dir = manifest.path.parent()?.to_path_buf();
+            let globs = workspace
+                .members
+                .iter()
+                .filter_map(|pattern| {
+                    GlobBuilder::new(pattern)
+                        .literal_separator(true)
+                        .build()
+                        .ok()
+                        .map(|glob| glob.compile_matcher())
+                })
+                .collect();
+            Some((dir, globs))
+        })
+        .collect();
+
+    manifests
+        .iter()
+        .filter_map(|manifest| {
+            // A `[workspace]`-only manifest is not a package and therefore not
+            // a crate root. The scan root remains the fallback for files that
+            // only sit under a virtual workspace.
+            manifest.package.as_ref()?;
+            let dir = manifest.path.parent()?.to_path_buf();
+
+            let enclosing = workspaces
+                .iter()
+                .filter(|(workspace_dir, _)| {
+                    dir != *workspace_dir && dir.starts_with(workspace_dir)
+                })
+                .max_by_key(|(workspace_dir, _)| workspace_dir.components().count());
+
+            let is_member = match enclosing {
+                None => true,
+                Some((workspace_dir, globs)) => {
+                    let relative = dir.strip_prefix(workspace_dir).unwrap_or(&dir);
+                    let relative = relative.to_string_lossy().replace('\\', "/");
+                    globs.iter().any(|glob| {
+                        glob.is_match(&relative) || glob.is_match(format!("{relative}/Cargo.toml"))
+                    })
+                }
+            };
+
+            Some(CrateRootCandidate { dir, is_member })
+        })
+        .collect()
+}
+
+/// Chooses the crate root for `path`, or reports why the choice is ambiguous.
+fn associate_crate_root(
+    path: &Path,
+    candidates: &[CrateRootCandidate],
+    root: &Path,
+) -> (PathBuf, Option<String>) {
+    let mut matching: Vec<&CrateRootCandidate> = candidates
+        .iter()
+        .filter(|candidate| path.starts_with(&candidate.dir))
+        .collect();
+    matching.sort_by_key(|candidate| candidate.dir.components().count());
+
+    let chosen = matching
+        .iter()
+        .filter(|candidate| candidate.is_member)
+        .max_by_key(|candidate| candidate.dir.components().count())
+        .copied();
+    let deepest = matching.last().copied();
+
+    match chosen {
+        Some(candidate) => {
+            let ambiguous = deepest.is_some_and(|deepest| {
+                deepest.dir.components().count() > candidate.dir.components().count()
+            });
+            let message = ambiguous.then(|| {
+                format!(
+                    "ambiguous crate root: a nested manifest is not a workspace member; \
+                     using {}",
+                    candidate.dir.display()
+                )
+            });
+            (candidate.dir.clone(), message)
+        }
+        None => {
+            let message = deepest.map(|candidate| {
+                format!(
+                    "ambiguous crate root: the nearest manifest is not a workspace member; \
+                     using the scan root instead of {}",
+                    candidate.dir.display()
+                )
+            });
+            (root.to_path_buf(), message)
+        }
+    }
 }
 
 /// Options controlling source loading and generated-code handling.
@@ -1568,10 +1813,7 @@ pub fn load_sources_with_options(
     root: &Path,
     options: SourceOptions,
 ) -> LoadedSources {
-    let crate_roots: Vec<PathBuf> = manifests
-        .iter()
-        .filter_map(|m| m.path.parent().map(Path::to_path_buf))
-        .collect();
+    let candidates = crate_root_candidates(manifests);
 
     let mut sources = Vec::new();
     let mut diagnostics = Vec::new();
@@ -1613,8 +1855,14 @@ pub fn load_sources_with_options(
             }
         };
 
-        let crate_root =
-            nearest_crate_root(path, &crate_roots).unwrap_or_else(|| root.to_path_buf());
+        let (crate_root, ambiguity) = associate_crate_root(path, &candidates, root);
+        if let Some(message) = ambiguity {
+            diagnostics.push(Diagnostic::warning(
+                DiagnosticCode::AmbiguousCrateRoot,
+                message,
+                Some(path.clone()),
+            ));
+        }
         let source = parse_source_with_options(path, &crate_root, &content, options.exclude_tests);
         if let Some(err) = &source.parse_error {
             diagnostics.push(Diagnostic::warning(
@@ -1770,6 +2018,173 @@ impl C {
         assert_eq!(entry[0].params.len(), 2);
         assert_eq!(entry[0].params[1].name, "amount");
         assert_eq!(entry[0].in_impl.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn records_trait_paths_on_impls_and_functions() {
+        let src = r#"
+trait Token {
+    fn transfer(&self);
+}
+
+struct Vault;
+
+impl Vault {
+    fn inherent(&self) {}
+}
+
+impl Token for Vault {
+    fn transfer(&self) {}
+}
+"#;
+        let s = parse(src);
+
+        let inherent = s.functions.iter().find(|f| f.name == "inherent").unwrap();
+        assert_eq!(inherent.in_impl.as_deref(), Some("Vault"));
+        assert_eq!(inherent.trait_path, None);
+
+        let transfer = s
+            .functions
+            .iter()
+            .find(|f| f.name == "transfer" && f.in_impl.as_deref() == Some("Vault"))
+            .unwrap();
+        assert_eq!(transfer.trait_path.as_deref(), Some("Token"));
+
+        let trait_method = s
+            .functions
+            .iter()
+            .find(|f| f.name == "transfer" && f.in_impl.as_deref() == Some("Token"))
+            .unwrap();
+        assert_eq!(trait_method.trait_path, None);
+
+        let trait_impl = s
+            .items
+            .iter()
+            .find(|item| item.kind == ItemKind::Impl && item.trait_path.is_some())
+            .unwrap();
+        assert_eq!(trait_impl.trait_path.as_deref(), Some("Token"));
+        assert_eq!(
+            s.items
+                .iter()
+                .filter(|item| item.kind == ItemKind::Impl)
+                .count(),
+            2
+        );
+
+        // Trait definitions are not implementations.
+        let trait_item = s
+            .items
+            .iter()
+            .find(|item| item.kind == ItemKind::Trait)
+            .unwrap();
+        assert_eq!(trait_item.trait_path, None);
+    }
+
+    #[test]
+    fn records_qualified_trait_paths() {
+        let src = r#"
+mod token {
+    pub trait Token {}
+}
+
+struct Vault;
+
+impl token::Token for Vault {
+    fn transfer(&self) {}
+}
+"#;
+        let s = parse(src);
+        let transfer = s.functions.iter().find(|f| f.name == "transfer").unwrap();
+        assert_eq!(transfer.trait_path.as_deref(), Some("token :: Token"));
+    }
+
+    #[test]
+    fn inventories_contracttype_and_contracterror() {
+        let src = r#"
+#[contracttype]
+pub struct Config {
+    pub admin: Address,
+}
+
+#[contracttype]
+pub enum DataKey {
+    Admin,
+    Balance(Address),
+}
+
+#[contracterror]
+pub enum VaultError {
+    NotInitialized = 1,
+    Unauthorized = 2,
+}
+
+struct Plain;
+"#;
+        let s = parse(src);
+        assert_eq!(s.contract_types.len(), 3);
+
+        let config = s
+            .contract_types
+            .iter()
+            .find(|ty| ty.name == "Config")
+            .unwrap();
+        assert_eq!(config.kind, ContractTypeKind::Struct);
+        assert!(config.is_public);
+        assert!(config.attributes.iter().any(|a| a == "contracttype"));
+        assert!(config.variants.is_empty());
+        assert_eq!(config.line, 2);
+
+        let key = s
+            .contract_types
+            .iter()
+            .find(|ty| ty.name == "DataKey")
+            .unwrap();
+        assert_eq!(key.kind, ContractTypeKind::Enum);
+        assert_eq!(key.variants, vec!["Admin", "Balance"]);
+
+        let error = s
+            .contract_types
+            .iter()
+            .find(|ty| ty.name == "VaultError")
+            .unwrap();
+        assert_eq!(error.kind, ContractTypeKind::Enum);
+        assert_eq!(error.variants, vec!["NotInitialized", "Unauthorized"]);
+        assert!(error.attributes.iter().any(|a| a == "contracterror"));
+
+        assert!(!s.contract_types.iter().any(|ty| ty.name == "Plain"));
+    }
+
+    #[test]
+    fn inventories_qualified_contract_type_attributes() {
+        let src = r#"
+#[soroban_sdk::contracttype]
+pub struct Config {
+    pub admin: Address,
+}
+"#;
+        let s = parse(src);
+        assert_eq!(s.contract_types.len(), 1);
+        assert_eq!(s.contract_types[0].name, "Config");
+    }
+
+    #[test]
+    fn fixture_inventories_contract_types() {
+        let s = parse(include_str!(
+            "../../../fixtures/projects/contract-types/src/lib.rs"
+        ));
+        assert!(s.is_parsed());
+        assert!(s
+            .contract_types
+            .iter()
+            .any(|ty| ty.name == "DataKey" && ty.kind == ContractTypeKind::Enum));
+        assert!(s
+            .contract_types
+            .iter()
+            .any(|ty| ty.name == "VaultError" && ty.kind == ContractTypeKind::Enum));
+        assert!(s
+            .contract_types
+            .iter()
+            .any(|ty| ty.name == "Config" && ty.kind == ContractTypeKind::Struct));
     }
 
     #[test]
