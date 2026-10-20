@@ -14,6 +14,7 @@ soroban-scan <COMMAND>
 | `explain <RULE-ID>` | Explain a rule in detail. |
 | `version` | Print the scanner name and version. |
 | `init` | Write a starter configuration file. |
+| `doctor` | Explain project classification, excludes, and effective configuration. |
 | `config show` / `config validate` | Inspect or validate configuration. |
 
 ---
@@ -248,6 +249,16 @@ to enable, and exclude globs, then writes only the answers plus the safe
 defaults. Prompts are shown only when stdin is a terminal; piped input is still
 read, so the flow can be scripted. Without `--interactive`, the documented
 starter template is written unchanged.
+
+## `doctor`
+
+```text
+soroban-scan doctor [PATH] [--format terminal|json] [--config FILE] [--no-config]
+```
+
+Prints the discovered manifests, classification and evidence, source file count,
+excludes, effective configuration, and enabled rule ids. See
+[Doctor](doctor.md).
 
 ## `config`
 

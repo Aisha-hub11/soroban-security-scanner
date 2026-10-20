@@ -260,6 +260,39 @@ fn version_exits_zero_and_prints_name() {
 }
 
 #[test]
+fn doctor_reports_generic_and_confirmed_classifications() {
+    let generic = run(&["doctor", fixture("projects/generic-rust").to_str().unwrap()]);
+    assert_eq!(generic.code, 0, "stderr: {}", generic.stderr);
+    assert!(generic.stdout.contains("generic_rust"));
+    assert!(generic.stdout.contains("Manifests:"));
+    assert!(!generic.stdout.contains(env!("CARGO_MANIFEST_DIR")));
+
+    let confirmed = run(&[
+        "doctor",
+        fixture("projects/soroban-confirmed").to_str().unwrap(),
+    ]);
+    assert_eq!(confirmed.code, 0, "stderr: {}", confirmed.stderr);
+    assert!(confirmed.stdout.contains("confirmed_soroban"));
+    assert!(confirmed.stdout.contains("soroban-sdk"));
+    assert!(!confirmed.stdout.contains(env!("CARGO_MANIFEST_DIR")));
+}
+
+#[test]
+fn doctor_json_is_machine_readable() {
+    let out = run(&[
+        "doctor",
+        fixture("projects/soroban-confirmed").to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    assert_eq!(value["classification"], "confirmed_soroban");
+    assert!(value["effective_config"].is_object());
+    assert!(!value["enabled_rules"].as_array().unwrap().is_empty());
+    assert!(!out.stdout.contains(env!("CARGO_MANIFEST_DIR")));
+}
+#[test]
 fn scan_help_includes_copy_pasteable_examples() {
     let out = run(&["scan", "--help"]);
     assert_eq!(out.code, 0);

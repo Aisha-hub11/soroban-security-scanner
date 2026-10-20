@@ -1,0 +1,50 @@
+name: Main Branch Security Scan
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-scan-${{ github.ref }}
+  # Every merged commit gets a complete post-merge result.
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scan:
+    name: Scan main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build scanner
+        run: cargo build --release -p soroban-scan-cli
+
+      - name: Scan main against the committed baseline
+        run: |
+          ./target/release/soroban-scan scan . \
+            --exclude 'fixtures/**' \
+            --exclude 'examples/**' \
+            --baseline .soroban-scan-baseline.json \
+            --format sarif \
+            --output main.sarif \
+            --fail-on high
+
+      - name: Upload SARIF to code scanning
+        if: hashFiles('main.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: main.sarif
+          category: soroban-scan-main
