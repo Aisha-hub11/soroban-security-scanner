@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `.github/CODEOWNERS` for the rule engine, security-sensitive core
+  modules, security/rule docs, and CI workflows.
 - Add a workspace layout and module dependency map, kept in sync with
   `src/lib.rs` by a module-map test.
 - Add ADR-0002, recording the severity and confidence methodology and the
