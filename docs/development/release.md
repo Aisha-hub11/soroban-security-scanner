@@ -20,6 +20,18 @@ cargo run --release -p soroban-scan-core --example benchmark
 
 CI must be green, including `cargo-deny` (advisories, licenses, bans, sources).
 
+## Public API checks
+
+The `semver` CI job runs
+[`cargo-semver-checks`](https://github.com/obi1kenobi/cargo-semver-checks) for
+`soroban-scan-core` on every pull request. It compares the branch against the
+latest `v*` tag and skips cleanly when no tag exists yet.
+
+While the workspace version is `0.x`, the job passes `release-type: minor` so
+pre-1.0 minor releases may contain breaking changes. Revisit that setting when
+1.0 ships. The stable surface is documented in
+[`docs/api-stability.md`](../api-stability.md).
+
 ## Release checklist
 
 1. Ensure `main` is green in CI.

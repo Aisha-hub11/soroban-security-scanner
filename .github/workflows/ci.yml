@@ -74,6 +74,34 @@ jobs:
           python-version: "3.x"
       - run: python tools/check_docs.py
 
+  semver:
+    name: Semver (core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Tags are needed to find the latest release baseline.
+          fetch-depth: 0
+      - name: Resolve latest release tag
+        id: baseline
+        run: |
+          tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -z "$tag" ]; then
+            echo "::notice::No release tag exists yet; skipping semver checks."
+          else
+            echo "Checking soroban-scan-core against $tag" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Check public API of soroban-scan-core
+        if: steps.baseline.outputs.tag != ''
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: soroban-scan-core
+          baseline-rev: ${{ steps.baseline.outputs.tag }}
+          # The crate is pre-1.0: minor releases may contain breaking changes
+          # (see docs/development/release.md). Revisit this once 1.0 ships.
+          release-type: minor
+
   package:
     name: Package (cargo publish --dry-run)
     runs-on: ubuntu-latest
