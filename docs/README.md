@@ -20,6 +20,7 @@ Start here.
 - [CI Recipes](ci-recipes.md) — copy-paste snippets for common CI systems and hooks.
 - [Observatory Integration](integration/observatory.md) — the stable, versioned report contract.
 - [Optional AI Assistance](ai.md) — off by default, never authoritative.
+- [FAQ](faq.md) — common questions about false positives, CI gating, and versions.
 - [Troubleshooting](troubleshooting.md) — common problems.
 
 ## Contributing

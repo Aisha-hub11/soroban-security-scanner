@@ -50,7 +50,7 @@ Requires a stable Rust toolchain. See [`docs/development/setup.md`](docs/develop
 
 ## What it detects
 
-Thirteen Soroban-aware detectors ship today (from `SS-001` to `SS-029`). Severity
+Fifteen Soroban-aware detectors ship today (from `SS-001` to `SS-029`). Severity
 and confidence are independent and always reported honestly.
 
 | Rule | Title | Severity | Confidence | Category |
@@ -92,7 +92,7 @@ Rule identifiers are stable (never reused or renumbered). See
 
 - Deterministic project discovery and Soroban classification.
 - `syn`-based Rust parsing with source locations.
-- Thirteen security detectors (from `SS-001` to `SS-029`) with fixtures and documentation.
+- Fifteen security detectors (from `SS-001` to `SS-029`) with fixtures and documentation.
 - CLI: `scan`, `rules`, `explain`, `version`, `init`, `config`.
 - Output formats: terminal, JSON, SARIF 2.1.0, Markdown, and GitHub workflow annotations.
 - Configurable rule selection, thresholds, and excludes.

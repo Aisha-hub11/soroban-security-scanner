@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A security regression issue template captures the rule id, minimal source,
   expected and actual behavior, and the Soroban SDK version, and directs
   confidential reports to the security policy.
+- SS-010 "Privileged state change without an event" (low/low): flags privileged
+  storage mutations with no `events().publish` call, with a documented key list.
+- SS-012 "Unbounded collection growth in an entry point" (medium/low): flags
+  `push`/`push_back`/`push_front` after a storage read with no length guard.
+- FAQ (`docs/faq.md`) answering common questions about false positives, CI
+  gating, supported versions, and reporting regressions.
+- SS-008 now includes a suggested `checked_*` alternative in its evidence and a
+  storage-backed positive corpus fixture.
 - `--max-findings N` for `scan`: bounds the rendered report after the
   deterministic sort, prints an explicit omitted-findings notice in every
   format, and exposes `truncation` (`shown`, `total`, `omitted`) in JSON and
