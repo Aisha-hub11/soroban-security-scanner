@@ -86,7 +86,7 @@ without ambiguity.
 
 ### Phase 4 — Initial Soroban Security Detectors (complete)
 
-Sixteen detectors, each with metadata, remediation, positive/negative fixtures,
+Eighteen detectors, each with metadata, remediation, positive/negative fixtures,
 tests, and documentation under `docs/rules/detectors/`:
 
 - [x] SS-001 State-changing entry point without caller authorization (high/medium).
@@ -98,9 +98,14 @@ tests, and documentation under `docs/rules/detectors/`:
 - [x] SS-007 Hardcoded Stellar account or contract address (medium/low).
 - [x] SS-008 Unchecked arithmetic in a contract entry point (medium/low).
 - [x] SS-009 Insecure randomness derived from ledger state (medium/low).
+- [x] SS-010 Privileged state change without an event (low/low).
 - [x] SS-011 Initialization entry point without a re-initialization guard (high/low).
+- [x] SS-012 Unbounded collection growth in an entry point (medium/low).
 - [x] SS-013 Cross-contract call before state update (high/low).
 - [x] SS-014 Token transfer amount without validation (medium/low).
+- [x] SS-015 Deprecated Soroban SDK version (low/medium).
+- [x] SS-016 Unbounded data stored in instance storage (medium/low).
+- [x] SS-017 Authorization after state mutation (medium/medium).
 - [x] SS-029 Public test or debug hook in a contract entry point (medium/medium).
 
 Supporting work:
@@ -265,7 +270,7 @@ Release throughput on a developer machine: ~2,500-2,800 entry points/s
   heuristic and low/medium confidence.
 - The `PR Security Scan` workflow has not yet run (no pull request has been
   opened); its underlying commands are covered by local tests.
-- Only sixteen detectors exist; the roadmap covers many more.
+- Only eighteen detectors exist; the roadmap covers many more.
 
 ## Architecture decisions
 

@@ -9,9 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `doctor`, a read-only diagnostics command that reports manifests,
+  classification evidence, excludes, effective configuration, and enabled rules.
+- Cache the composite Action's `target/` directory, keyed by runner OS, Action
+  ref, and `Cargo.lock`, with a graceful cache-miss fallback.
+- Add `main-scan.yml` to scan pushes to `main` against the committed baseline and
+  upload SARIF; scheduled updates remain reviewable through `baseline-refresh.yml`.
+- Add ADR-0005, the dependency justification and review policy.
 - `rules --format markdown` emits the rule catalog table used in
   `docs/rules/README.md`, so the documentation table can be generated from the
   registry in CI instead of edited by hand.
+
 - Markdown scan reports now include `Top rules` and `Categories` summary tables,
   counted deterministically and sorted by count then id or name.
 - `init --interactive` asks for minimum severity, enabled categories, and exclude
@@ -21,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A security regression issue template captures the rule id, minimal source,
   expected and actual behavior, and the Soroban SDK version, and directs
   confidential reports to the security policy.
+- SS-010 "Privileged state change without an event" (low/low): flags privileged
+  storage mutations with no `events().publish` call, with a documented key list.
+- SS-012 "Unbounded collection growth in an entry point" (medium/low): flags
+  `push`/`push_back`/`push_front` after a storage read with no length guard.
 - SS-015 "Deprecated Soroban SDK version" (low/medium): manifest-level finding
   compared against the configurable `minimum_soroban_sdk` policy.
 - SS-016 "Unbounded data stored in instance storage" (medium/low): flags repeated
@@ -29,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutations that occur before `require_auth`.
 - SS-002 now records constructor argument provenance and suppresses findings for
   hardcoded, storage-configured, and current-contract client addresses.
+- FAQ (`docs/faq.md`) answering common questions about false positives, CI
+  gating, supported versions, and reporting regressions.
+- SS-008 now includes a suggested `checked_*` alternative in its evidence and a
+  storage-backed positive corpus fixture.
 - `--max-findings N` for `scan`: bounds the rendered report after the
   deterministic sort, prints an explicit omitted-findings notice in every
   format, and exposes `truncation` (`shown`, `total`, `omitted`) in JSON and
@@ -73,6 +89,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ineffective severity/confidence overrides emit a `CONFIG-001` diagnostic when
   the target rule is unknown or disabled. `config validate` prints the same
   warnings without failing.
+
+- Baselines now warn with `BASELINE-001` when they reference rule ids that are no
+  longer registered.
+- `scan --prune-baseline FILE` removes resolved entries with an auditable
+  `removed`/`kept` summary.
+- `--baseline` is repeatable and merges files by fingerprint deterministically.
+- Baselines can be written and read as TOML; reads auto-detect JSON or TOML and
+  JSON remains the default.
 
 ### Changed
 

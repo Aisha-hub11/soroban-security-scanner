@@ -14,6 +14,7 @@ soroban-scan <COMMAND>
 | `explain <RULE-ID>` | Explain a rule in detail. |
 | `version` | Print the scanner name and version. |
 | `init` | Write a starter configuration file. |
+| `doctor` | Explain project classification, excludes, and effective configuration. |
 | `config show` / `config validate` | Inspect or validate configuration. |
 
 ---
@@ -43,8 +44,10 @@ roots in one run.
 | `--disable <RULE>` | Disable a rule by id (repeatable). |
 | `--rule <RULE>` | Run only the given rule(s) (repeatable). |
 | `--fail-on <none\|info\|low\|medium\|high\|critical>` | Failure threshold (default `high`). |
-| `--baseline <FILE>` | Compare against a baseline; gate applies to new findings only. |
+| `--baseline <FILE>` | Compare against a baseline (repeatable; files are merged). Gate applies to new findings only. |
 | `--write-baseline <FILE>` | Write current findings as a baseline and exit. |
+| `--prune-baseline <FILE>` | Rewrite the baseline with only findings present in this scan and print a removal summary. |
+| `--baseline-format <json\|toml>` | Baseline output format (default inferred from the file extension, then JSON). Reads auto-detect. |
 | `--new-only` | With `--baseline`, report only new findings. |
 | `--incremental` | With `--baseline`, do not report resolved findings. |
 | `--guidance` | Print labeled offline guidance for findings (see [ai.md](ai.md)). |
@@ -248,6 +251,16 @@ to enable, and exclude globs, then writes only the answers plus the safe
 defaults. Prompts are shown only when stdin is a terminal; piped input is still
 read, so the flow can be scripted. Without `--interactive`, the documented
 starter template is written unchanged.
+
+## `doctor`
+
+```text
+soroban-scan doctor [PATH] [--format terminal|json] [--config FILE] [--no-config]
+```
+
+Prints the discovered manifests, classification and evidence, source file count,
+excludes, effective configuration, and enabled rule ids. See
+[Doctor](doctor.md).
 
 ## `config`
 

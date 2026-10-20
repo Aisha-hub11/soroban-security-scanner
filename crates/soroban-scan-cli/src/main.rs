@@ -133,6 +133,27 @@ impl FailOnArg {
     }
 }
 
+/// Argument value for `--baseline-format`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum BaselineFormatArg {
+    Json,
+    Toml,
+}
+
+impl BaselineFormatArg {
+    fn from_path(path: &Path) -> Self {
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
+        {
+            BaselineFormatArg::Toml
+        } else {
+            BaselineFormatArg::Json
+        }
+    }
+}
+
 /// Argument value for `--pager`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum PagerArg {
@@ -177,6 +198,8 @@ enum Command {
     Init(InitArgs),
     /// Inspect the scanner configuration.
     Config(ConfigArgs),
+    /// Diagnose project classification, exclusions, and effective configuration.
+    Doctor(DoctorArgs),
 }
 
 #[derive(Debug, Args)]
@@ -254,13 +277,21 @@ struct ScanArgs {
     #[arg(long, value_enum, default_value_t = FailOnArg::High)]
     fail_on: FailOnArg,
 
-    /// Compare against a baseline file, marking findings as new or existing.
-    #[arg(long, value_name = "FILE")]
-    baseline: Option<PathBuf>,
+    /// Compare against one or more baseline files, marking findings as new or existing.
+    #[arg(long, value_name = "FILE", action = clap::ArgAction::Append)]
+    baseline: Vec<PathBuf>,
 
     /// Write current findings to a baseline file and exit successfully.
     #[arg(long, value_name = "FILE")]
     write_baseline: Option<PathBuf>,
+
+    /// Rewrite a baseline with only findings present in this scan.
+    #[arg(long, value_name = "FILE", conflicts_with = "write_baseline")]
+    prune_baseline: Option<PathBuf>,
+
+    /// Baseline file format (JSON is the default; reads auto-detect).
+    #[arg(long, value_enum)]
+    baseline_format: Option<BaselineFormatArg>,
 
     /// With --baseline, report only findings that are new.
     #[arg(long, requires = "baseline")]
@@ -341,6 +372,32 @@ struct InitArgs {
 }
 
 #[derive(Debug, Args)]
+struct DoctorArgs {
+    /// Directory or file to inspect.
+    #[arg(default_value = ".")]
+    path: PathBuf,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = DoctorFormatArg::Terminal)]
+    format: DoctorFormatArg,
+
+    /// Configuration file to use.
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+
+    /// Ignore discovered configuration and use built-in defaults.
+    #[arg(long, conflicts_with = "config")]
+    no_config: bool,
+}
+
+/// Argument value for `doctor --format`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DoctorFormatArg {
+    Terminal,
+    Json,
+}
+
+#[derive(Debug, Args)]
 struct ConfigArgs {
     #[command(subcommand)]
     command: ConfigCommand,
@@ -411,6 +468,7 @@ fn run(cli: Cli) -> CliResult<u8> {
         Command::Explain(args) => run_explain(args, &registry),
         Command::Init(args) => run_init(args),
         Command::Config(args) => run_config(args),
+        Command::Doctor(args) => run_doctor(args, &registry),
     }
 }
 
@@ -481,7 +539,10 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
 
     if let Some(path) = &args.write_baseline {
         let baseline = Baseline::from_findings(&outcome.findings);
-        let text = baseline.to_json().map_err(runtime)?;
+        let format = args
+            .baseline_format
+            .unwrap_or_else(|| BaselineFormatArg::from_path(path));
+        let text = serialize_baseline(&baseline, format)?;
         std::fs::write(path, text)
             .map_err(|e| CliError::Runtime(format!("cannot write {}: {e}", path.display())))?;
         if !args.quiet {
@@ -494,12 +555,42 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
         return Ok(EXIT_SUCCESS);
     }
 
-    let mut new_indices: Option<Vec<usize>> = None;
-    if let Some(path) = &args.baseline {
+    if let Some(path) = &args.prune_baseline {
         let text = std::fs::read_to_string(path).map_err(|e| {
             CliError::Runtime(format!("cannot read baseline {}: {e}", path.display()))
         })?;
-        let baseline = Baseline::from_json(&text).map_err(runtime)?;
+        let baseline = Baseline::from_text(&text).map_err(runtime)?;
+        let (pruned, removed) = baseline.prune(&outcome.findings);
+        let format = args
+            .baseline_format
+            .unwrap_or_else(|| BaselineFormatArg::from_path(path));
+        let text = serialize_baseline(&pruned, format)?;
+        std::fs::write(path, text)
+            .map_err(|e| CliError::Runtime(format!("cannot write {}: {e}", path.display())))?;
+        if !args.quiet {
+            eprintln!(
+                "pruned baseline: {} removed, {} kept in {}",
+                removed,
+                pruned.findings.len(),
+                path.display()
+            );
+        }
+        return Ok(EXIT_SUCCESS);
+    }
+
+    let mut new_indices: Option<Vec<usize>> = None;
+    if !args.baseline.is_empty() {
+        let mut baselines = Vec::with_capacity(args.baseline.len());
+        for path in &args.baseline {
+            let text = std::fs::read_to_string(path).map_err(|e| {
+                CliError::Runtime(format!("cannot read baseline {}: {e}", path.display()))
+            })?;
+            baselines.push(Baseline::from_text(&text).map_err(runtime)?);
+        }
+        let baseline = Baseline::merge(&baselines);
+        outcome
+            .diagnostics
+            .extend(baseline.unknown_rule_diagnostics(registry));
         let comparison = baseline::compare(&outcome.findings, &baseline);
         let resolved = if args.incremental {
             0
@@ -939,6 +1030,147 @@ fn render_interactive_config(config: &ScanConfig) -> CliResult<String> {
     ))
 }
 
+fn run_doctor(args: DoctorArgs, registry: &RuleRegistry) -> CliResult<u8> {
+    if !args.path.exists() {
+        return Err(CliError::Runtime(format!(
+            "path does not exist: {}",
+            args.path.display()
+        )));
+    }
+    let root = if args.path.is_file() {
+        args.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    } else {
+        args.path.clone()
+    };
+    let config = load_config(args.config.as_deref(), &root, !args.no_config)?;
+    let loaded = project::load(&root, &config.discovery_options()).map_err(runtime)?;
+
+    let root_label = display_root(&root);
+    let manifests: Vec<String> = loaded
+        .project
+        .manifests
+        .iter()
+        .map(|manifest| relative_display(&manifest.path, &root))
+        .collect();
+    let evidence: Vec<String> = loaded
+        .project
+        .soroban
+        .evidence
+        .iter()
+        .map(|evidence| sanitize_root(evidence, &root, &root_label))
+        .collect();
+    let enabled_rules: Vec<&str> = registry
+        .rules()
+        .iter()
+        .filter(|rule| {
+            let meta = rule.metadata();
+            rule.enabled_by_default() && config.rules.is_rule_enabled(meta.id, meta.category)
+        })
+        .map(|rule| rule.metadata().id)
+        .collect();
+
+    match args.format {
+        DoctorFormatArg::Json => {
+            let value = serde_json::json!({
+                "root": root_label,
+                "classification": loaded.project.kind.to_string(),
+                "manifests": manifests,
+                "classification_evidence": evidence,
+                "source_files": loaded.project.source_files,
+                "sources_loaded": loaded.sources.len(),
+                "exclude": &config.exclude,
+                "exclude_tests": config.exclude_tests,
+                "follow_symlinks": config.follow_symlinks,
+                "effective_config": &config,
+                "enabled_rules": enabled_rules,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&value).map_err(|e| CliError::Runtime(format!(
+                    "cannot serialize doctor output: {e}"
+                )))?
+            );
+        }
+        DoctorFormatArg::Terminal => {
+            println!("soroban-scan doctor");
+            println!("Root: {root_label}");
+            println!("Classification: {}", loaded.project.kind);
+            println!(
+                "Manifests: {}",
+                if manifests.is_empty() {
+                    "none".to_string()
+                } else {
+                    manifests.join(", ")
+                }
+            );
+            if evidence.is_empty() {
+                println!("Classification evidence: none");
+            } else {
+                println!("Classification evidence:");
+                for item in &evidence {
+                    println!("  - {item}");
+                }
+            }
+            println!("Source files: {}", loaded.project.source_files);
+            println!("Sources loaded: {}", loaded.sources.len());
+            println!(
+                "Excludes: {}",
+                if config.exclude.is_empty() {
+                    "none".to_string()
+                } else {
+                    config.exclude.join(", ")
+                }
+            );
+            println!("Exclude tests: {}", config.exclude_tests);
+            println!("Follow symlinks: {}", config.follow_symlinks);
+            println!("Enabled rules: {}", enabled_rules.join(", "));
+            let effective = toml::to_string_pretty(&config)
+                .map_err(|e| CliError::Runtime(format!("cannot serialize configuration: {e}")))?;
+            println!("\nEffective configuration:\n{effective}");
+        }
+    }
+    Ok(EXIT_SUCCESS)
+}
+
+/// A display-safe label for the scan root.
+fn display_root(root: &Path) -> String {
+    let label = if root.is_relative() {
+        root.to_path_buf()
+    } else {
+        let cwd = std::env::current_dir().ok();
+        cwd.as_deref()
+            .and_then(|cwd| root.strip_prefix(cwd).ok())
+            .map(Path::to_path_buf)
+            .or_else(|| root.file_name().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    let text = label.to_string_lossy().replace('\\', "/");
+    if text.is_empty() {
+        ".".to_string()
+    } else {
+        text
+    }
+}
+
+/// A root-relative display label, falling back to the file name.
+fn relative_display(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .ok()
+        .or_else(|| path.file_name().map(Path::new))
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Removes the absolute scan root from evidence text.
+fn sanitize_root(text: &str, root: &Path, root_label: &str) -> String {
+    let absolute = root.to_string_lossy();
+    text.replace(absolute.as_ref(), root_label)
+}
+
 fn run_config(args: ConfigArgs) -> CliResult<u8> {
     match args.command {
         ConfigCommand::Show { config } => {
@@ -1157,6 +1389,13 @@ fn validate_rule_ids(config: &ScanConfig, registry: &RuleRegistry) -> CliResult<
         }
     }
     Ok(())
+}
+
+fn serialize_baseline(baseline: &Baseline, format: BaselineFormatArg) -> CliResult<String> {
+    match format {
+        BaselineFormatArg::Json => baseline.to_json().map_err(runtime),
+        BaselineFormatArg::Toml => baseline.to_toml().map_err(runtime),
+    }
 }
 
 fn runtime(error: soroban_scan_core::error::ScanError) -> CliError {

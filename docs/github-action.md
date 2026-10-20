@@ -99,6 +99,17 @@ jobs:
 - run: echo "scanner exit code was ${{ steps.scan.outputs.exit-code }}"
 ```
 
+## Build caching
+
+The Action caches its `target/` directory with `actions/cache`. The key includes
+the runner OS, the Action ref, and a hash of the Action's `Cargo.lock`, so a new
+Action release or a dependency change rebuilds instead of reusing a stale
+binary. Cache restore is best-effort: if the cache service is unavailable the
+Action builds normally and the workflow does not fail.
+
+Only build outputs are cached. No secrets, tokens, or environment files are
+stored in the cache, and fork refs do not reuse trusted-ref caches.
+
 ## Permissions
 
 - `contents: read` — required to check out and read the repository.

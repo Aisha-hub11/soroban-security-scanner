@@ -11,9 +11,13 @@ pub struct Vault;
 
 #[contractimpl]
 impl Vault {
-    pub fn withdraw(_env: Env, from: Address, amount: i128) -> i128 {
+    pub fn withdraw(env: Env, from: Address, amount: i128) -> i128 {
         from.require_auth();
-        let balance = 100i128;
+        let balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Balance)
+            .unwrap_or(0);
         balance - amount
     }
 }

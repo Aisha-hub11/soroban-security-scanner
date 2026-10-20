@@ -145,6 +145,20 @@ This repository exercises the reusable workflow from
 [`security-scan.yml`](../.github/workflows/security-scan.yml) on every push and
 pull request, using the current commit as the scanner source.
 
+### Main-branch scanning
+
+[`main-scan.yml`](../.github/workflows/main-scan.yml) runs on every push to
+`main` and on manual dispatch. It scans the repository code (excluding the
+intentionally vulnerable `fixtures/**` and `examples/**`), compares against the
+committed `.soroban-scan-baseline.json`, and uploads SARIF with the
+`soroban-scan-main` category. The `--fail-on high` gate makes post-merge drift
+visible instead of waiting for the next pull request.
+
+Baseline updates stay reviewable: the scheduled
+[`baseline-refresh.yml`](../.github/workflows/baseline-refresh.yml) opens a pull
+request on `automation/baseline-refresh` rather than pushing to `main`. The main
+scan never rewrites the baseline and never force-pushes.
+
 ## SARIF and code scanning
 
 Upload SARIF 2.1.0 to surface findings in the repository's **Security → Code
