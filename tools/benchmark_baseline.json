@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "runner": "ubuntu-latest",
+  "target": "examples/vulnerable-contract",
+  "metric": "median_ms",
+  "baseline_median_ms": 250.0,
+  "threshold_factor": 6.0,
+  "notes": "Conservative ubuntu-latest ceiling for a release build. The wide factor catches accidental quadratic behaviour without failing on normal CI variance. Refresh with --update-baseline on the same runner type when intentionally changing performance."
+}

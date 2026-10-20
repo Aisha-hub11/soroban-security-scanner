@@ -470,6 +470,43 @@ fn scan_json_output_is_machine_readable() {
 }
 
 #[test]
+fn timings_are_opt_in_stderr_only_and_do_not_change_the_report() {
+    let without = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(without.code, 0, "stderr: {}", without.stderr);
+    assert!(!without.stderr.contains("timing:"));
+    let baseline: serde_json::Value = serde_json::from_str(&without.stdout).unwrap();
+
+    let with = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+        "--timings",
+    ]);
+    assert_eq!(with.code, 0, "stderr: {}", with.stderr);
+    assert!(
+        with.stderr.contains("timing: SS-"),
+        "missing timing lines: {}",
+        with.stderr
+    );
+    assert!(with.stderr.contains(" ms (completed)"));
+    assert!(!with.stdout.contains("timing:"));
+
+    let report: serde_json::Value = serde_json::from_str(&with.stdout).unwrap();
+    assert_eq!(report["findings"], baseline["findings"]);
+    assert_eq!(report["stats"], baseline["stats"]);
+}
+
+#[test]
 fn scan_json_includes_diagnostic_codes_and_levels() {
     let out = run(&[
         "scan",
@@ -950,6 +987,39 @@ fn guidance_is_offline_and_labeled() {
     assert_eq!(out.code, 0);
     assert!(out.stderr.contains("GUIDANCE (offline, rule-based)"));
     assert!(out.stderr.contains("deterministic findings"));
+}
+
+#[test]
+fn guidance_request_budget_is_enforced_and_scan_completes() {
+    let dir =
+        std::env::temp_dir().join(format!("soroban-scan-cli-ai-budget-{}", std::process::id()));
+    write_suppression_project(&dir, false);
+    std::fs::write(
+        dir.join("soroban-scan.toml"),
+        "[ai]\nenabled = false\nmax_requests = 1\n",
+    )
+    .unwrap();
+
+    let out = run(&[
+        "scan",
+        dir.to_str().unwrap(),
+        "--fail-on",
+        "none",
+        "--quiet",
+        "--guidance",
+    ]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert!(
+        out.stderr.contains("AI-001"),
+        "missing budget diagnostic: {}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("budget exhausted"));
+    // The summary was still produced; only later calls were skipped.
+    assert!(out.stderr.contains("GUIDANCE"));
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

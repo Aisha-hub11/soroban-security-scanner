@@ -98,7 +98,9 @@ Suppressions never hide findings. The scanner:
     `stats.suppressions_detected` counters;
   - **SARIF** — suppressed findings stay in `results` and are marked as in-source
     suppressions:
-    `"suppressions": [{ "kind": "inSource", "status": "accepted", "justification": "..." }]`;
+    `"suppressions": [{ "kind": "inSource", "status": "accepted", "justification": "..." }]`.
+    Rule descriptors also carry `help.text` / `help.markdown` and
+    `properties.remediation` / `properties.references`;
   - **Markdown** — a `## Suppressed findings` section.
 
 Unused directives are reported too (`applied: false`), which makes stale or

@@ -16,6 +16,7 @@
 //! constraints and the network policy in `docs/security/security-model.md`.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +71,17 @@ pub struct AiConfig {
     ///
     /// Defaults to `1024`.
     pub max_output_tokens: u32,
+    /// Maximum provider requests per scan. `None` means unlimited. The default
+    /// is deliberately finite so a scan with thousands of findings cannot
+    /// trigger thousands of requests.
+    pub max_requests: Option<usize>,
+    /// Maximum retries for a single transient provider failure. Retries are
+    /// bounded; assistance never retries indefinitely.
+    pub max_retries: usize,
+    /// Base exponential backoff delay in milliseconds.
+    pub backoff_ms: u64,
+    /// Upper bound for a single backoff delay in milliseconds.
+    pub max_backoff_ms: u64,
 }
 
 impl Default for AiConfig {
@@ -80,6 +92,10 @@ impl Default for AiConfig {
             model: None,
             temperature: DEFAULT_TEMPERATURE,
             max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+            max_requests: Some(DEFAULT_MAX_REQUESTS),
+            max_retries: DEFAULT_MAX_RETRIES,
+            backoff_ms: DEFAULT_BACKOFF_MS,
+            max_backoff_ms: DEFAULT_MAX_BACKOFF_MS,
         }
     }
 }
@@ -130,6 +146,15 @@ impl AiConfig {
     }
 }
 
+/// Default provider request budget for one scan.
+pub const DEFAULT_MAX_REQUESTS: usize = 50;
+/// Default retry budget for one provider request.
+pub const DEFAULT_MAX_RETRIES: usize = 2;
+/// Default base backoff delay.
+pub const DEFAULT_BACKOFF_MS: u64 = 250;
+/// Default maximum backoff delay.
+pub const DEFAULT_MAX_BACKOFF_MS: u64 = 4_000;
+
 /// Errors from the assistance layer.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AiError {
@@ -142,6 +167,150 @@ pub enum AiError {
     /// A provider returned text that referenced findings it was not given.
     #[error("provider response rejected: {0}")]
     InvalidResponse(String),
+    /// The configured provider request budget was exhausted.
+    #[error("assistance request budget exhausted after {0} request(s)")]
+    RequestBudgetExhausted(usize),
+}
+
+/// Bounded request budget and retry policy for provider calls.
+///
+/// The budget is per scan and fail-closed: once exhausted, the caller continues
+/// without assistance rather than issuing more requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallPolicy {
+    max_requests: Option<usize>,
+    used: usize,
+    max_retries: usize,
+    backoff: Duration,
+    max_backoff: Duration,
+}
+
+impl CallPolicy {
+    /// Builds a policy from configuration.
+    pub fn from_config(config: &AiConfig) -> Self {
+        CallPolicy {
+            max_requests: config.max_requests,
+            used: 0,
+            max_retries: config.max_retries,
+            backoff: Duration::from_millis(config.backoff_ms),
+            max_backoff: Duration::from_millis(config.max_backoff_ms.max(config.backoff_ms)),
+        }
+    }
+
+    /// Attempts to consume one request slot.
+    pub fn try_acquire(&mut self) -> Result<(), AiError> {
+        if let Some(limit) = self.max_requests {
+            if self.used >= limit {
+                return Err(AiError::RequestBudgetExhausted(limit));
+            }
+        }
+        self.used += 1;
+        Ok(())
+    }
+
+    /// Requests consumed so far.
+    pub fn used(&self) -> usize {
+        self.used
+    }
+
+    /// Configured request limit, if any.
+    pub fn limit(&self) -> Option<usize> {
+        self.max_requests
+    }
+
+    /// Delays for retry attempts, capped at `max_backoff_ms`.
+    ///
+    /// `attempt` is 1-based. The delay doubles each attempt so a transient
+    /// outage is not hammered, but it never exceeds the configured cap.
+    pub fn backoff_delay(&self, attempt: usize) -> Duration {
+        let exponent = attempt.saturating_sub(1).min(16) as u32;
+        let millis = self
+            .backoff
+            .as_millis()
+            .saturating_mul(1u128 << exponent)
+            .min(self.max_backoff.as_millis());
+        Duration::from_millis(millis.min(u64::MAX as u128) as u64)
+    }
+
+    /// Runs `operation` with a bounded number of exponential-backoff retries.
+    ///
+    /// `operation` receives the 1-based attempt number. The final error is
+    /// returned once the retry budget is spent; callers must fail closed.
+    pub fn run_with_retry<T, E, F>(&self, mut operation: F) -> Result<T, E>
+    where
+        F: FnMut(usize) -> Result<T, E>,
+    {
+        let mut attempt = 1;
+        loop {
+            match operation(attempt) {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    if attempt > self.max_retries {
+                        return Err(error);
+                    }
+                    std::thread::sleep(self.backoff_delay(attempt));
+                    attempt += 1;
+                }
+            }
+        }
+    }
+}
+
+/// A bounded session around an [`Assistant`].
+///
+/// Every summarize/explain call consumes one request slot. When the budget is
+/// exhausted the session returns `None` and records that fact, so the CLI can
+/// emit a diagnostic and continue the scan without further provider calls.
+pub struct GuidanceSession<'a> {
+    assistant: &'a dyn Assistant,
+    policy: CallPolicy,
+    exhausted: bool,
+}
+
+impl<'a> GuidanceSession<'a> {
+    /// Wraps an assistant with the configured request policy.
+    pub fn new(assistant: &'a dyn Assistant, config: &AiConfig) -> Self {
+        GuidanceSession {
+            assistant,
+            policy: CallPolicy::from_config(config),
+            exhausted: false,
+        }
+    }
+
+    /// Summarizes findings if a request slot is available.
+    pub fn summarize(&mut self, findings: &[Finding]) -> Option<Explanation> {
+        self.call(|assistant| assistant.summarize(findings))
+    }
+
+    /// Explains one finding if a request slot is available.
+    pub fn explain_finding(
+        &mut self,
+        finding: &Finding,
+        rule: Option<&RuleMetadata>,
+    ) -> Option<Explanation> {
+        self.call(|assistant| assistant.explain_finding(finding, rule))
+    }
+
+    /// Whether a call was skipped because the request budget was exhausted.
+    pub fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+
+    /// Requests consumed so far.
+    pub fn requests_used(&self) -> usize {
+        self.policy.used()
+    }
+
+    fn call<F>(&mut self, operation: F) -> Option<Explanation>
+    where
+        F: FnOnce(&dyn Assistant) -> Explanation,
+    {
+        if self.policy.try_acquire().is_err() {
+            self.exhausted = true;
+            return None;
+        }
+        Some(operation(self.assistant))
+    }
 }
 
 /// A clearly labeled piece of assistance text.
@@ -465,8 +634,6 @@ mod tests {
     fn enabling_without_provider_fails_closed() {
         let config = AiConfig {
             enabled: true,
-            provider: None,
-            model: None,
             ..AiConfig::default()
         };
         assert_eq!(assistant(&config).unwrap_err(), AiError::NotConfigured);
@@ -477,7 +644,6 @@ mod tests {
         let config = AiConfig {
             enabled: true,
             provider: Some("no-such-provider".into()),
-            model: None,
             ..AiConfig::default()
         };
         assert!(matches!(
@@ -583,5 +749,105 @@ mod tests {
             validate_explanation(&hostile, &known),
             Err(AiError::InvalidResponse(_))
         ));
+    }
+
+    struct CountingAssistant {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingAssistant {
+        fn new() -> Self {
+            CountingAssistant {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl Assistant for CountingAssistant {
+        fn name(&self) -> &str {
+            "counting"
+        }
+
+        fn explain_finding(&self, _finding: &Finding, _rule: Option<&RuleMetadata>) -> Explanation {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Explanation::new("explained", true, AI_LABEL)
+        }
+
+        fn summarize(&self, _findings: &[Finding]) -> Explanation {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Explanation::new("summary", true, AI_LABEL)
+        }
+    }
+
+    #[test]
+    fn request_budget_stops_further_calls_and_reports_exhaustion() {
+        let assistant = CountingAssistant::new();
+        let config = AiConfig {
+            enabled: true,
+            max_requests: Some(2),
+            ..AiConfig::default()
+        };
+        let mut session = GuidanceSession::new(&assistant, &config);
+
+        assert!(session.summarize(&[finding()]).is_some());
+        assert!(session.explain_finding(&finding(), Some(&meta())).is_some());
+        assert!(session.explain_finding(&finding(), Some(&meta())).is_none());
+        assert!(session.exhausted());
+        assert_eq!(session.requests_used(), 2);
+        assert_eq!(assistant.calls(), 2);
+    }
+
+    #[test]
+    fn zero_request_budget_fails_closed() {
+        let assistant = CountingAssistant::new();
+        let config = AiConfig {
+            enabled: true,
+            max_requests: Some(0),
+            ..AiConfig::default()
+        };
+        let mut session = GuidanceSession::new(&assistant, &config);
+        assert!(session.summarize(&[]).is_none());
+        assert!(session.exhausted());
+        assert_eq!(assistant.calls(), 0);
+    }
+
+    #[test]
+    fn backoff_is_exponential_and_capped() {
+        let config = AiConfig {
+            backoff_ms: 100,
+            max_backoff_ms: 250,
+            ..AiConfig::default()
+        };
+        let policy = CallPolicy::from_config(&config);
+        assert_eq!(policy.backoff_delay(1), Duration::from_millis(100));
+        assert_eq!(policy.backoff_delay(2), Duration::from_millis(200));
+        assert_eq!(policy.backoff_delay(3), Duration::from_millis(250));
+        assert_eq!(policy.backoff_delay(99), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn retries_are_bounded_and_eventually_succeed() {
+        let config = AiConfig {
+            max_retries: 2,
+            backoff_ms: 1,
+            max_backoff_ms: 2,
+            ..AiConfig::default()
+        };
+        let policy = CallPolicy::from_config(&config);
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let result: Result<&str, &str> = policy.run_with_retry(|attempt| {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt < 3 {
+                Err("transient")
+            } else {
+                Ok("done")
+            }
+        });
+        assert_eq!(result, Ok("done"));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }

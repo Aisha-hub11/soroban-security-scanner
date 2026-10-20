@@ -720,17 +720,36 @@ pub fn render_sarif(outcome: &ScanOutcome, registry: &RuleRegistry) -> String {
         .metadata_sorted()
         .iter()
         .map(|meta| {
+            let references = if meta.references.is_empty() {
+                "No external references.".to_string()
+            } else {
+                meta.references
+                    .iter()
+                    .map(|reference| format!("- {reference}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let help_markdown = format!(
+                "## {}\n\n{}\n\n### Remediation\n\n{}\n\n### References\n\n{}",
+                meta.title, meta.description, meta.remediation, references
+            );
             json!({
                 "id": meta.id,
                 "name": meta.title,
                 "shortDescription": { "text": meta.title },
                 "fullDescription": { "text": meta.description },
+                "help": {
+                    "text": format!("{}\n\nRemediation: {}", meta.description, meta.remediation),
+                    "markdown": help_markdown
+                },
                 "helpUri": meta.references.first().copied().unwrap_or(TOOL_URL),
                 "defaultConfiguration": { "level": sarif_level(meta.default_severity) },
                 "properties": {
                     "category": meta.category.as_str(),
                     "confidence": meta.default_confidence.as_str(),
-                    "severity": meta.default_severity.as_str()
+                    "severity": meta.default_severity.as_str(),
+                    "remediation": meta.remediation,
+                    "references": meta.references
                 }
             })
         })
@@ -1430,6 +1449,25 @@ mod tests {
             assert!(
                 result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].is_string()
             );
+        }
+
+        // Rule descriptors carry help markdown and remediation metadata for
+        // GitHub code scanning (issue #60).
+        let rules = value["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap();
+        assert!(!rules.is_empty());
+        for rule in rules {
+            assert!(rule["help"]["text"].is_string());
+            let help = rule["help"]["markdown"].as_str().unwrap();
+            assert!(help.contains("## "));
+            assert!(help.contains("### Remediation"));
+            assert!(help.contains("### References"));
+            assert!(!rule["properties"]["remediation"]
+                .as_str()
+                .unwrap()
+                .is_empty());
+            assert!(rule["properties"]["references"].is_array());
         }
     }
 

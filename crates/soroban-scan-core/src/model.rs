@@ -226,6 +226,9 @@ pub enum DiagnosticCode {
     /// A generated source file was excluded by configuration.
     #[serde(rename = "GENERATED-002")]
     GeneratedFileExcluded,
+    /// The optional assistance layer exhausted its request budget.
+    #[serde(rename = "AI-001")]
+    AiRequestBudgetExhausted,
 }
 
 impl DiagnosticCode {
@@ -248,6 +251,7 @@ impl DiagnosticCode {
             DiagnosticCode::UnexpandedMacro => "MACRO-001",
             DiagnosticCode::GeneratedFileMarked => "GENERATED-001",
             DiagnosticCode::GeneratedFileExcluded => "GENERATED-002",
+            DiagnosticCode::AiRequestBudgetExhausted => "AI-001",
         }
     }
 }
