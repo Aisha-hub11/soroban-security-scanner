@@ -51,8 +51,24 @@ future work).
 
 ## Package publishing
 
-Publishing to crates.io is not performed yet. Any future publishing must ensure
-that `soroban-scan-core` and `soroban-scan-cli` versions stay in lockstep.
+Tag releases publish both crates in lockstep through
+`.github/workflows/publish.yml`. The workflow:
+
+1. requires a `v*` tag and verifies it matches `[workspace.package].version`;
+2. runs `cargo publish --dry-run` for `soroban-scan-core`;
+3. publishes `soroban-scan-core`, waits for the crates.io index to serve that
+   version, then runs the CLI dry-run and publishes `soroban-scan-cli`.
+
+The token is a **least-privilege crates.io token** scoped to the two crate names
+and stored as the `CARGO_REGISTRY_TOKEN` secret in the protected `crates-io`
+environment. Tag pushes publish automatically; `workflow_dispatch` defaults to a
+dry run and only publishes when run against a tag with `dry_run` disabled.
+`cargo publish --dry-run` also runs on every pull request in the `package` CI
+job.
+
+Versions must stay in lockstep: both crates inherit `[workspace.package].version`
+and the CLI depends on the exact same core version. Bump the workspace version
+once, never the crates independently.
 
 ## Post-release
 

@@ -17,11 +17,21 @@ The binary is written to `target/release/soroban-scan` (`.exe` on Windows).
 
 ## Install with Cargo
 
+From a local checkout:
+
 ```bash
 cargo install --path crates/soroban-scan-cli
 ```
 
-This places `soroban-scan` on your Cargo bin path (usually `~/.cargo/bin`).
+Once the crates are published, install from crates.io instead:
+
+```bash
+cargo install soroban-scan-cli
+```
+
+Both commands place `soroban-scan` on your Cargo bin path (usually
+`~/.cargo/bin`). `soroban-scan-core` is published in lockstep and installed
+automatically as the CLI's dependency.
 
 ## Prebuilt binaries
 
