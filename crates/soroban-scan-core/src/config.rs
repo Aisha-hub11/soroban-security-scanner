@@ -89,7 +89,7 @@ impl RulesConfig {
 }
 
 /// Complete scan configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ScanConfig {
     /// Minimum severity to report.
@@ -136,14 +136,23 @@ impl ScanConfig {
     }
 
     /// Parses a configuration from TOML text.
+    ///
+    /// Deserialization rejects unknown fields; the result is then validated so
+    /// out-of-range assistance parameters fail as configuration errors.
     pub fn from_toml(text: &str) -> Result<Self, crate::error::ScanError> {
-        text.parse::<toml::Value>()
+        let config: Self = text
+            .parse::<toml::Value>()
             .map_err(|e| crate::error::ScanError::Config(format!("invalid config TOML: {e}")))
             .and_then(|value| {
                 value
                     .try_into()
                     .map_err(|e| crate::error::ScanError::Config(format!("invalid config: {e}")))
-            })
+            })?;
+        config
+            .ai
+            .validate()
+            .map_err(|e| crate::error::ScanError::Config(format!("invalid config: {e}")))?;
+        Ok(config)
     }
 }
 
@@ -269,5 +278,49 @@ disabled_categories = ["nonsense"]
     fn rejects_unknown_fields() {
         let err = ScanConfig::from_toml("mystery = true").unwrap_err();
         assert!(matches!(err, crate::error::ScanError::Config(_)));
+    }
+
+    #[test]
+    fn parses_validated_ai_parameters() {
+        let config = ScanConfig::from_toml(
+            r#"
+[ai]
+enabled = false
+provider = "openai"
+model = "example-model"
+temperature = 0.2
+max_output_tokens = 2048
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ai.temperature, 0.2);
+        assert_eq!(config.ai.max_output_tokens, 2048);
+        assert_eq!(config.ai.provider.as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn defaults_include_conservative_ai_parameters() {
+        let config = ScanConfig::default();
+        assert_eq!(config.ai.temperature, 0.0);
+        assert_eq!(config.ai.max_output_tokens, 1024);
+    }
+
+    #[test]
+    fn rejects_out_of_range_ai_parameters() {
+        let cases = [
+            ("[ai]\ntemperature = 1.5\n", "ai.temperature"),
+            ("[ai]\ntemperature = -0.1\n", "ai.temperature"),
+            ("[ai]\ntemperature = nan\n", "ai.temperature"),
+            ("[ai]\nmax_output_tokens = 0\n", "ai.max_output_tokens"),
+            ("[ai]\nmax_output_tokens = 9000\n", "ai.max_output_tokens"),
+        ];
+        for (text, field) in cases {
+            let err = ScanConfig::from_toml(text).unwrap_err();
+            assert!(matches!(err, crate::error::ScanError::Config(_)));
+            assert!(
+                err.to_string().contains(field),
+                "expected {field} in error: {err}"
+            );
+        }
     }
 }
