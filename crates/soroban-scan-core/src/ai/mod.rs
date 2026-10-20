@@ -15,6 +15,8 @@
 //! assistant can be added by implementing [`Assistant`]; it must obey the same
 //! constraints and the network policy in `docs/security/security-model.md`.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::category::Category;
@@ -58,6 +60,9 @@ pub enum AiError {
     /// A provider was named but is not available in this build.
     #[error("assistance provider '{0}' is not available in this build")]
     ProviderUnavailable(String),
+    /// A provider returned text that referenced findings it was not given.
+    #[error("provider response rejected: {0}")]
+    InvalidResponse(String),
 }
 
 /// A clearly labeled piece of assistance text.
@@ -90,6 +95,79 @@ impl Explanation {
     }
 }
 
+/// Factory for a named assistance provider.
+pub type ProviderFactory = fn() -> Box<dyn Assistant>;
+
+/// Registry of provider factories keyed by name.
+///
+/// Providers are opt-in and never registered implicitly. Unknown names fail
+/// closed, so configuration alone cannot enable an unvetted provider.
+#[derive(Default)]
+pub struct ProviderRegistry {
+    factories: BTreeMap<String, ProviderFactory>,
+}
+
+impl ProviderRegistry {
+    /// Creates an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates the built-in registry. Only offline providers are registered by
+    /// default; model-backed providers must be added by their feature module.
+    pub fn builtin() -> Self {
+        let mut registry = Self::new();
+        registry.register("rule-guidance", || Box::new(RuleGuidance));
+        registry
+    }
+
+    /// Registers a factory, replacing any existing entry with the same name.
+    pub fn register(&mut self, name: impl Into<String>, factory: ProviderFactory) {
+        self.factories.insert(name.into(), factory);
+    }
+
+    /// Resolves a provider by name, failing closed when it is unknown.
+    pub fn build(&self, name: &str) -> Result<Box<dyn Assistant>, AiError> {
+        self.factories
+            .get(name)
+            .map(|factory| factory())
+            .ok_or_else(|| AiError::ProviderUnavailable(name.to_string()))
+    }
+
+    /// Registered provider names, sorted for stable output.
+    pub fn names(&self) -> Vec<&str> {
+        self.factories.keys().map(String::as_str).collect()
+    }
+}
+
+/// Validates that assistance text only references findings already reported.
+///
+/// Any `SS-###` id that is not in `findings` is rejected. This keeps the
+/// deterministic engine authoritative even if a provider is hostile or buggy.
+pub fn validate_explanation(
+    explanation: &Explanation,
+    findings: &[Finding],
+) -> Result<(), AiError> {
+    let known: std::collections::BTreeSet<&str> = findings
+        .iter()
+        .map(|finding| finding.rule_id.as_str())
+        .collect();
+    for token in explanation
+        .text
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+    {
+        if token.len() == 6
+            && token.starts_with("SS-")
+            && token[3..].chars().all(|c| c.is_ascii_digit())
+            && !known.contains(token)
+        {
+            return Err(AiError::InvalidResponse(format!(
+                "references unknown finding {token}"
+            )));
+        }
+    }
+    Ok(())
+}
 /// An assistance provider.
 ///
 /// Implementations must never fabricate findings or locations, and must never
@@ -344,5 +422,28 @@ mod tests {
         assert!(!rendered.contains("/home/alice"), "{rendered}");
         assert!(rendered.contains(REDACTED), "{rendered}");
         assert!(rendered.contains(HOME), "{rendered}");
+    }
+
+    #[test]
+    fn registry_resolves_named_provider_and_fails_closed() {
+        let registry = ProviderRegistry::builtin();
+        assert_eq!(registry.names(), vec!["rule-guidance"]);
+        assert!(registry.build("rule-guidance").is_ok());
+        assert_eq!(
+            registry.build("unknown").err(),
+            Some(AiError::ProviderUnavailable("unknown".to_string()))
+        );
+    }
+
+    #[test]
+    fn validator_rejects_unknown_findings_and_accepts_known_ones() {
+        let known = vec![finding()];
+        let ok = Explanation::new("SS-001 is described here.", false, OFFLINE_LABEL);
+        assert!(validate_explanation(&ok, &known).is_ok());
+        let hostile = Explanation::new("Also SS-099 at src/lib.rs:10", true, AI_LABEL);
+        assert!(matches!(
+            validate_explanation(&hostile, &known),
+            Err(AiError::InvalidResponse(_))
+        ));
     }
 }
