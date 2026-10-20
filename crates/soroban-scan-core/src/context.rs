@@ -13,15 +13,21 @@ pub struct AnalysisContext<'a> {
     project: &'a Project,
     sources: &'a [ParsedSource],
     root: &'a Path,
+    minimum_soroban_sdk: &'a str,
 }
 
 impl<'a> AnalysisContext<'a> {
     /// Creates a context for a project and its parsed sources.
-    pub fn new(project: &'a Project, sources: &'a [ParsedSource]) -> Self {
+    pub fn new(
+        project: &'a Project,
+        sources: &'a [ParsedSource],
+        minimum_soroban_sdk: &'a str,
+    ) -> Self {
         AnalysisContext {
             project,
             sources,
             root: project.root.as_path(),
+            minimum_soroban_sdk,
         }
     }
 
@@ -87,5 +93,10 @@ impl<'a> AnalysisContext<'a> {
     /// The Soroban SDK version requirements discovered in manifests.
     pub fn soroban_sdk_versions(&self) -> &[String] {
         &self.project.soroban.sdk_versions
+    }
+
+    /// The configured minimum `soroban-sdk` version.
+    pub fn minimum_soroban_sdk(&self) -> &str {
+        self.minimum_soroban_sdk
     }
 }

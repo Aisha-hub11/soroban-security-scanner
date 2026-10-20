@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A security regression issue template captures the rule id, minimal source,
   expected and actual behavior, and the Soroban SDK version, and directs
   confidential reports to the security policy.
+- SS-015 "Deprecated Soroban SDK version" (low/medium): manifest-level finding
+  compared against the configurable `minimum_soroban_sdk` policy.
+- SS-016 "Unbounded data stored in instance storage" (medium/low): flags repeated
+  distinct instance-storage keys and collection growth.
+- SS-017 "Authorization after state mutation" (medium/medium): flags storage
+  mutations that occur before `require_auth`.
+- SS-002 now records constructor argument provenance and suppresses findings for
+  hardcoded, storage-configured, and current-contract client addresses.
 - `--max-findings N` for `scan`: bounds the rendered report after the
   deterministic sort, prints an explicit omitted-findings notice in every
   format, and exposes `truncation` (`shown`, `total`, `omitted`) in JSON and

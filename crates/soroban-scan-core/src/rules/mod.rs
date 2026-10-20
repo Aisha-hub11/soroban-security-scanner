@@ -9,10 +9,13 @@
 pub mod util;
 pub mod validation;
 
+mod authorization_after_mutation;
 mod cross_contract_auth;
 mod cross_contract_before_state_update;
+mod deprecated_sdk;
 mod hardcoded_address;
 mod insecure_randomness;
+mod instance_storage_unbounded;
 mod missing_authorization;
 mod panic_prone;
 mod public_test_hooks;
@@ -45,6 +48,13 @@ pub fn register_all(registry: &mut RuleRegistry) -> Result<(), RegistryError> {
         cross_contract_before_state_update::CrossContractBeforeStateUpdate,
     ))?;
     registry.register(Box::new(token_transfer_amount::TokenTransferAmount))?;
+    registry.register(Box::new(deprecated_sdk::DeprecatedSdkVersion))?;
+    registry.register(Box::new(
+        instance_storage_unbounded::InstanceStorageForUnboundedData,
+    ))?;
+    registry.register(Box::new(
+        authorization_after_mutation::AuthorizationAfterMutation,
+    ))?;
     Ok(())
 }
 
@@ -60,7 +70,7 @@ mod tests {
             ids,
             vec![
                 "SS-001", "SS-002", "SS-003", "SS-004", "SS-005", "SS-006", "SS-007", "SS-008",
-                "SS-009", "SS-011", "SS-013", "SS-014", "SS-029"
+                "SS-009", "SS-011", "SS-013", "SS-014", "SS-015", "SS-016", "SS-017", "SS-029"
             ]
         );
     }

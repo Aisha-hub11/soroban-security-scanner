@@ -40,6 +40,17 @@ fn every_rule_has_a_corpus_directory() {
         .collect();
     for id in &ids {
         let dir = corpus_dir().join(id);
+        if id == "SS-015" {
+            assert!(
+                dir.join("positive.toml").exists(),
+                "{id}: missing positive.toml"
+            );
+            assert!(
+                dir.join("negative.toml").exists(),
+                "{id}: missing negative.toml"
+            );
+            continue;
+        }
         assert!(
             dir.join("positive.rs").exists(),
             "{id}: missing positive.rs"
@@ -57,7 +68,6 @@ fn rules_can_be_selected_individually() {
     let base = ScanConfig::default();
 
     for meta in registry.metadata_sorted() {
-        let src = std::fs::read_to_string(corpus_dir().join(meta.id).join("positive.rs")).unwrap();
         let config = ScanConfig {
             rules: soroban_scan_core::config::RulesConfig {
                 enabled: vec![meta.id.to_string()],
@@ -65,7 +75,15 @@ fn rules_can_be_selected_individually() {
             },
             ..base.clone()
         };
-        let outcome = engine::scan_source_str(&src, "positive.rs", &config, &registry);
+        let outcome = if meta.id == "SS-015" {
+            let manifest =
+                std::fs::read_to_string(corpus_dir().join(meta.id).join("positive.toml")).unwrap();
+            engine::scan_manifest_str("Cargo.toml", &manifest, &config, &registry).unwrap()
+        } else {
+            let src =
+                std::fs::read_to_string(corpus_dir().join(meta.id).join("positive.rs")).unwrap();
+            engine::scan_source_str(&src, "positive.rs", &config, &registry)
+        };
         assert!(
             outcome.findings.iter().all(|f| f.rule_id == meta.id),
             "{}: selection leaked other rules",
