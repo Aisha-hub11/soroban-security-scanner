@@ -69,9 +69,15 @@ impl Rule for UncheckedArithmetic {
                 }
                 for op in facts.arithmetic_ops() {
                     let location = location_for(ctx, source, op.line, op.column);
+                    let suggested = match op.op.as_str() {
+                        "+" => "checked_add",
+                        "-" => "checked_sub",
+                        "*" => "checked_mul",
+                        _ => "checked arithmetic",
+                    };
                     let evidence = format!(
-                        "unchecked `{}` arithmetic in entry point `{}`: {}",
-                        op.op, func.name, op.text
+                        "unchecked `{}` arithmetic in entry point `{}`: {} (use `{}` and handle `None`)",
+                        op.op, func.name, op.text, suggested
                     );
                     out.push(Finding::new(&METADATA, location, evidence));
                 }

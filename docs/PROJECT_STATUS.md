@@ -86,7 +86,7 @@ without ambiguity.
 
 ### Phase 4 — Initial Soroban Security Detectors (complete)
 
-Thirteen detectors, each with metadata, remediation, positive/negative fixtures,
+Fifteen detectors, each with metadata, remediation, positive/negative fixtures,
 tests, and documentation under `docs/rules/detectors/`:
 
 - [x] SS-001 State-changing entry point without caller authorization (high/medium).
@@ -265,7 +265,7 @@ Release throughput on a developer machine: ~2,500-2,800 entry points/s
   heuristic and low/medium confidence.
 - The `PR Security Scan` workflow has not yet run (no pull request has been
   opened); its underlying commands are covered by local tests.
-- Only thirteen detectors exist; the roadmap covers many more.
+- Only fifteen detectors exist; the roadmap covers many more.
 
 ## Architecture decisions
 

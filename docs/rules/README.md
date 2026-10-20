@@ -60,7 +60,9 @@ heuristically is reported as `severity: high, confidence: low`, never
 | [SS-007](detectors/SS-007.md) | Hardcoded Stellar account or contract address | medium | low | configuration |
 | [SS-008](detectors/SS-008.md) | Unchecked arithmetic in a contract entry point | medium | low | arithmetic |
 | [SS-009](detectors/SS-009.md) | Insecure randomness derived from ledger state | medium | low | arithmetic |
+| [SS-010](detectors/SS-010.md) | Privileged state change without an event | low | low | events |
 | [SS-011](detectors/SS-011.md) | Initialization entry point without a re-initialization guard | high | low | access-control |
+| [SS-012](detectors/SS-012.md) | Unbounded collection growth in an entry point | medium | low | resource-usage |
 | [SS-013](detectors/SS-013.md) | Cross-contract call before state update | high | low | cross-contract |
 | [SS-014](detectors/SS-014.md) | Token transfer amount without validation | medium | low | token |
 | [SS-029](detectors/SS-029.md) | Public test or debug hook in a contract entry point | medium | medium | access-control |
