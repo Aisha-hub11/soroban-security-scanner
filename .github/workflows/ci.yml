@@ -65,6 +65,17 @@ jobs:
           python-version: "3.x"
       - run: python tools/check_docs.py
 
+  package:
+    name: Package (cargo publish --dry-run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The CLI's dry-run can only resolve soroban-scan-core after that crate
+      # has been published; the release workflow verifies it at publish time.
+      - run: cargo publish --dry-run -p soroban-scan-core --locked
+
   sdk-matrix:
     name: Soroban SDK ${{ matrix.sdk }}
     runs-on: ubuntu-latest

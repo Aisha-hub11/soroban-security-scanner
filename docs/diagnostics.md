@@ -26,6 +26,7 @@ can classify or suppress them without parsing the human-readable message.
 | `MANIFEST-001` | warning | A `Cargo.toml` could not be read or parsed; it was skipped. |
 | `SOURCE-001` | warning | A source file exceeded the size limit and was skipped. |
 | `SOURCE-002` | warning | A source file could not be read and was skipped. |
+| `CRATE-001` | warning | A source file's crate root could not be determined unambiguously; the nearest workspace member or scan root was used. |
 | `RULE-001` | error | A rule produced a location that is not a safe relative path; the finding was rejected. |
 | `RULE-002` | error | A rule reported a file outside the analyzed set; the finding was rejected. |
 | `RULE-003` | error | A rule produced a finding without evidence; the finding was rejected. |
@@ -34,8 +35,8 @@ can classify or suppress them without parsing the human-readable message.
 | `CONFIG-001` | warning | A severity or confidence override has no effect because its rule is unknown or disabled. |
 | `BASELINE-001` | warning | A baseline references a rule id that is no longer registered; the entry remains forward compatible. |
 
-Codes are grouped by area: `PARSE-*`, `MANIFEST-*`, `SOURCE-*`, `RULE-*`,
-`CONFIG-*`, and `BASELINE-*`. `config validate` prints `CONFIG-*` warnings to
+Codes are grouped by area: `PARSE-*`, `MANIFEST-*`, `SOURCE-*`, `CRATE-*`,
+`RULE-*`, `CONFIG-*`, and `BASELINE-*`. `config validate` prints `CONFIG-*` warnings to
 stderr while still exiting successfully, because they do not prevent a scan from
 running.
 

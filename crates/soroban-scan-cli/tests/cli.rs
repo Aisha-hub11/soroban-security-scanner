@@ -530,6 +530,24 @@ fn scan_sarif_output_is_valid() {
 }
 
 #[test]
+fn scan_html_output_is_self_contained() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "html",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert!(out.stdout.starts_with("<!DOCTYPE html>"));
+    assert!(out.stdout.contains("<style>"));
+    assert!(out.stdout.contains("SS-001"));
+    assert!(!out.stdout.contains("<script"));
+    assert!(!out.stdout.contains("<link"));
+}
+
+#[test]
 fn scan_missing_path_is_runtime_error() {
     let out = run(&["scan", "definitely/not/a/real/path/xyz"]);
     assert_eq!(out.code, 3);
@@ -1502,7 +1520,7 @@ fn scan_color_auto_respects_no_color() {
 
 #[test]
 fn scan_machine_formats_never_contain_ansi_even_with_color_always() {
-    for format in ["json", "sarif", "markdown", "github"] {
+    for format in ["json", "sarif", "markdown", "html", "github"] {
         let out = run(&[
             "scan",
             fixture("corpus/SS-001").to_str().unwrap(),

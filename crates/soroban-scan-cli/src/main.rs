@@ -86,6 +86,7 @@ enum FormatArg {
     Json,
     Sarif,
     Markdown,
+    Html,
     Github,
 }
 
@@ -96,6 +97,7 @@ impl From<FormatArg> for OutputFormat {
             FormatArg::Json => OutputFormat::Json,
             FormatArg::Sarif => OutputFormat::Sarif,
             FormatArg::Markdown => OutputFormat::Markdown,
+            FormatArg::Html => OutputFormat::Html,
             FormatArg::Github => OutputFormat::Github,
         }
     }
