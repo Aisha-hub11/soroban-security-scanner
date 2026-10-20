@@ -81,6 +81,10 @@ confidence_overrides = { }
 enabled = false
 # provider = "openai"
 # model = "..."
+# Sampling temperature, 0.0-1.0 (finite). Lower is more deterministic.
+temperature = 0.0
+# Maximum tokens the provider may return, 1-8192.
+max_output_tokens = 1024
 ```
 
 ### Fields
@@ -103,6 +107,8 @@ enabled = false
 | `ai.enabled` | bool | `false` | Enable the optional assistance layer (fails closed without a provider). |
 | `ai.provider` | string | *(none)* | Provider name; none is bundled. |
 | `ai.model` | string | *(none)* | Model identifier. |
+| `ai.temperature` | float | `0.0` | Sampling temperature; must be finite and in `0.0..=1.0`. Out-of-range values are rejected during configuration loading. |
+| `ai.max_output_tokens` | integer | `1024` | Maximum provider output tokens; must be in `1..=8192`. Bounds latency and runaway cost. |
 
 Unknown fields and category names are rejected. An unknown rule id in
 `disabled` or `enabled` is a usage error. An override that targets an unknown or

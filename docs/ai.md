@@ -63,7 +63,20 @@ Configuration has an `[ai]` section:
 enabled = false
 # provider = "openai"
 # model = "..."
+temperature = 0.0
+max_output_tokens = 1024
 ```
+
+Model parameters have conservative defaults and hard bounds:
+
+| Field | Default | Accepted range | Rationale |
+| ----- | ------- | -------------- | --------- |
+| `temperature` | `0.0` | `0.0`–`1.0` (finite) | Deterministic, reproducible assistance; high values increase nondeterminism. |
+| `max_output_tokens` | `1024` | `1`–`8192` | Bounds latency and runaway provider cost. |
+
+Values outside these ranges — including `nan` and infinities for
+`temperature` — are rejected during configuration loading, before any scan or
+provider call. The scan exits with a configuration error naming the field.
 
 No model provider is bundled. If you set `enabled = true` without a bundled
 provider — or name a provider that is not compiled in — the CLI **fails closed**:

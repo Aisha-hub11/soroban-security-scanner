@@ -39,8 +39,23 @@ pub const OFFLINE_LABEL: &str = "GUIDANCE (offline, rule-based)";
 /// Label prepended to model-generated text.
 pub const AI_LABEL: &str = "AI-GENERATED ASSISTANCE (not authoritative)";
 
+/// Conservative default sampling temperature (deterministic assistance).
+pub const DEFAULT_TEMPERATURE: f32 = 0.0;
+/// Highest accepted sampling temperature.
+pub const MAX_TEMPERATURE: f32 = 1.0;
+/// Conservative default output-token budget.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 1024;
+/// Lowest accepted output-token budget.
+pub const MIN_MAX_OUTPUT_TOKENS: u32 = 1;
+/// Highest accepted output-token budget.
+pub const MAX_MAX_OUTPUT_TOKENS: u32 = 8192;
+
 /// Configuration for the optional assistance layer.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Defaults are deliberately conservative: assistance is disabled, sampling is
+/// deterministic, and the output budget is small. Out-of-range values are
+/// rejected by [`AiConfig::validate`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AiConfig {
     /// Master switch. Disabled by default.
@@ -49,6 +64,70 @@ pub struct AiConfig {
     pub provider: Option<String>,
     /// Model identifier.
     pub model: Option<String>,
+    /// Sampling temperature in `0.0..=1.0`. Defaults to `0.0`.
+    pub temperature: f32,
+    /// Maximum tokens the provider may return, in `1..=8192`.
+    ///
+    /// Defaults to `1024`.
+    pub max_output_tokens: u32,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        AiConfig {
+            enabled: false,
+            provider: None,
+            model: None,
+            temperature: DEFAULT_TEMPERATURE,
+            max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        }
+    }
+}
+
+/// Validation errors for [`AiConfig`].
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum AiConfigError {
+    /// Temperature is not a finite value inside the accepted range.
+    #[error("ai.temperature must be finite and between 0.0 and {max} (got {value})")]
+    Temperature {
+        /// Rejected value.
+        value: f32,
+        /// Highest accepted value.
+        max: f32,
+    },
+    /// Output-token budget is outside the accepted range.
+    #[error("ai.max_output_tokens must be between {min} and {max} (got {value})")]
+    MaxOutputTokens {
+        /// Rejected value.
+        value: u32,
+        /// Lowest accepted value.
+        min: u32,
+        /// Highest accepted value.
+        max: u32,
+    },
+}
+
+impl AiConfig {
+    /// Validates the model parameters against their safety bounds.
+    pub fn validate(&self) -> Result<(), AiConfigError> {
+        if !self.temperature.is_finite()
+            || self.temperature < 0.0
+            || self.temperature > MAX_TEMPERATURE
+        {
+            return Err(AiConfigError::Temperature {
+                value: self.temperature,
+                max: MAX_TEMPERATURE,
+            });
+        }
+        if !(MIN_MAX_OUTPUT_TOKENS..=MAX_MAX_OUTPUT_TOKENS).contains(&self.max_output_tokens) {
+            return Err(AiConfigError::MaxOutputTokens {
+                value: self.max_output_tokens,
+                min: MIN_MAX_OUTPUT_TOKENS,
+                max: MAX_MAX_OUTPUT_TOKENS,
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Errors from the assistance layer.
@@ -326,11 +405,69 @@ mod tests {
     }
 
     #[test]
+    fn default_model_parameters_are_conservative_and_valid() {
+        let config = AiConfig::default();
+        assert_eq!(config.temperature, DEFAULT_TEMPERATURE);
+        assert_eq!(config.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_temperature_and_token_boundaries() {
+        for temperature in [0.0, 0.5, MAX_TEMPERATURE] {
+            let config = AiConfig {
+                temperature,
+                ..AiConfig::default()
+            };
+            assert!(config.validate().is_ok(), "rejected {temperature}");
+        }
+        for max_output_tokens in [MIN_MAX_OUTPUT_TOKENS, 1024, MAX_MAX_OUTPUT_TOKENS] {
+            let config = AiConfig {
+                max_output_tokens,
+                ..AiConfig::default()
+            };
+            assert!(config.validate().is_ok(), "rejected {max_output_tokens}");
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_temperature_values() {
+        for temperature in [-0.1, 1.1, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let config = AiConfig {
+                temperature,
+                ..AiConfig::default()
+            };
+            assert!(
+                matches!(config.validate(), Err(AiConfigError::Temperature { .. })),
+                "accepted {temperature}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_output_token_limits() {
+        for max_output_tokens in [0, MAX_MAX_OUTPUT_TOKENS + 1, u32::MAX] {
+            let config = AiConfig {
+                max_output_tokens,
+                ..AiConfig::default()
+            };
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(AiConfigError::MaxOutputTokens { .. })
+                ),
+                "accepted {max_output_tokens}"
+            );
+        }
+    }
+
+    #[test]
     fn enabling_without_provider_fails_closed() {
         let config = AiConfig {
             enabled: true,
             provider: None,
             model: None,
+            ..AiConfig::default()
         };
         assert_eq!(assistant(&config).unwrap_err(), AiError::NotConfigured);
     }
@@ -341,6 +478,7 @@ mod tests {
             enabled: true,
             provider: Some("no-such-provider".into()),
             model: None,
+            ..AiConfig::default()
         };
         assert!(matches!(
             assistant(&config),
