@@ -1,0 +1,32 @@
+# `soroban-scan-core` public API stability
+
+Consumers embedding the scanner may rely on the **stable** surface below.
+Everything else is **unstable** and may change in any release.
+
+## Stable
+
+- `engine` entry points for scanning source, manifests, and loaded projects.
+- `config` (`ScanConfig`, rule selection, thresholds, excludes, suppressions).
+- `finding`, `model`, `severity`, `confidence`, and `category` value types.
+- `report` renderers and output format parsing.
+- `rule`, `registry`, and `validation` extension points for custom rules.
+
+Breaking changes to these items require a major version bump. Additive changes
+may ship in minor releases. The stable surface is listed in `lib.rs` rustdoc and
+is enforced by the `api_stability` integration test.
+
+## Unstable
+
+- `source`, `project`, `discovery`, `manifest`, `suppression`, `soroban`, and
+  `rules` internals.
+- `ai`, `baseline`, `context`, and `error` support modules.
+- The `analysis`/pipeline implementation details and any `pub(crate)` item.
+- Internal utility modules (`rules::util`, `test_support`).
+
+These may be refactored without a major bump. They are public only to support
+the scanner's own crates and tests; downstream code should not depend on them.
+
+## Enforcement
+
+The `api_stability` test checks that every top-level `pub mod` is classified in
+this document as stable or unstable, and that stable modules remain documented.

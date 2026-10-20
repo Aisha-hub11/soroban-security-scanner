@@ -45,6 +45,8 @@ pub enum OutputFormat {
     Html,
     /// GitHub Actions workflow annotations (`::error`, `::warning`, `::notice`).
     Github,
+    /// JUnit XML for CI test reporters.
+    Junit,
 }
 
 impl OutputFormat {
@@ -57,6 +59,7 @@ impl OutputFormat {
             "markdown" | "md" => Ok(OutputFormat::Markdown),
             "html" => Ok(OutputFormat::Html),
             "github" => Ok(OutputFormat::Github),
+            "junit" | "junit-xml" => Ok(OutputFormat::Junit),
             other => Err(format!("unknown output format: {other}")),
         }
     }
@@ -70,6 +73,7 @@ impl OutputFormat {
             OutputFormat::Markdown => "markdown",
             OutputFormat::Html => "html",
             OutputFormat::Github => "github",
+            OutputFormat::Junit => "junit",
         }
     }
 }
@@ -84,7 +88,60 @@ pub fn render(outcome: &ScanOutcome, registry: &RuleRegistry, format: OutputForm
         OutputFormat::Markdown => render_markdown(outcome),
         OutputFormat::Html => render_html(outcome),
         OutputFormat::Github => render_github(outcome),
+        OutputFormat::Junit => render_junit(outcome),
     }
+}
+
+/// Escapes text for XML element content and attributes.
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// Renders findings as JUnit XML: one test case per finding, failures only for
+/// high and critical severities.
+pub fn render_junit(outcome: &ScanOutcome) -> String {
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    let failures = outcome
+        .findings
+        .iter()
+        .filter(|f| matches!(f.severity.as_str(), "high" | "critical"))
+        .count();
+    out.push_str(&format!(
+        "<testsuites name=\"{TOOL_NAME}\"><testsuite name=\"soroban-scan\" tests=\"{}\" failures=\"{failures}\">\n",
+        outcome.findings.len()
+    ));
+    for finding in &outcome.findings {
+        let location = format!(
+            "{}:{}:{}",
+            finding.location.file.display(),
+            finding.location.line,
+            finding.location.column.unwrap_or(1)
+        );
+        let name = escape_xml(&format!("{} {location}", finding.rule_id));
+        let classname = escape_xml(&format!("soroban-scan.{}", finding.rule_id));
+        out.push_str(&format!(
+            "<testcase classname=\"{classname}\" name=\"{name}\">"
+        ));
+        if matches!(finding.severity.as_str(), "high" | "critical") {
+            let message = escape_xml(&format!(
+                "{}: {} ({})",
+                finding.severity.as_str(),
+                finding.title,
+                finding.evidence
+            ));
+            out.push_str(&format!(
+                "<failure message=\"{message}\">{message}</failure>"
+            ));
+        }
+        out.push_str("</testcase>\n");
+    }
+    out.push_str("</testsuite></testsuites>\n");
+    out
 }
 
 /// Renders a suppression file label with the platform path separator, so
@@ -215,7 +272,12 @@ pub fn render_terminal_with_color(outcome: &ScanOutcome, color: TerminalColor) -
             out.push_str("No security findings.\n");
         }
     } else {
+        let mut current_file: Option<&std::path::Path> = None;
         for finding in &outcome.findings {
+            if current_file != Some(finding.location.file.as_path()) {
+                current_file = Some(finding.location.file.as_path());
+                out.push_str(&format!("\n{}\n", finding.location.file.display()));
+            }
             let label = format!("{:<8}", finding.severity.as_str().to_ascii_uppercase());
             out.push_str(&format!(
                 "{} {:<7} {}\n",
@@ -225,7 +287,15 @@ pub fn render_terminal_with_color(outcome: &ScanOutcome, color: TerminalColor) -
             ));
             out.push_str(&format!("         {}\n", finding.title));
             out.push_str(&format!("         confidence: {}\n", finding.confidence));
-            out.push_str(&format!("         evidence: {}\n", finding.evidence));
+            let frame = finding
+                .evidence
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(120)
+                .collect::<String>();
+            out.push_str(&format!("         evidence: {frame}\n"));
             out.push_str(&format!("         fix: {}\n\n", finding.remediation));
         }
         out.push_str(&summary_line(&outcome.findings));
