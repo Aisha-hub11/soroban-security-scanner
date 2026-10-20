@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add ADR-0002, recording the severity and confidence methodology and the
+  critical+high heuristic restriction.
 - Add `--format html`, a single self-contained report with inline CSS, no
   JavaScript or remote resources, and HTML escaping for every source-derived
   value.
