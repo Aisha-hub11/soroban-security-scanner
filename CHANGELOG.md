@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Baseline parsing now fails closed on empty, truncated, or corrupted JSON/TOML,
+  with the file path and parser position in the error. A truncated baseline
+  exits `3` instead of being treated as empty.
+
 ### Added
 
+- Add `.github/CODEOWNERS` for the rule engine, security-sensitive core
+  modules, security/rule docs, and CI workflows.
+- Add a workspace layout and module dependency map, kept in sync with
+  `src/lib.rs` by a module-map test.
+- Add ADR-0002, recording the severity and confidence methodology and the
+  critical+high heuristic restriction.
 - Add `--format html`, a single self-contained report with inline CSS, no
   JavaScript or remote resources, and HTML escaping for every source-derived
   value.

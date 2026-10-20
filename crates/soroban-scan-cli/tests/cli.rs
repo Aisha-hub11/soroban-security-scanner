@@ -659,6 +659,38 @@ fn baseline_suppresses_existing_findings() {
 }
 
 #[test]
+fn truncated_baseline_reports_actionable_runtime_error() {
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-bad-bl-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline = dir.join("truncated.json");
+    std::fs::write(
+        &baseline,
+        "{\n  \"version\": 1,\n  \"tool\": \"soroban-scan\",\n  \
+         \"tool_version\": \"0.2.0\",\n  \"findings\": [\n    {\"fingerprint\": \"abc\"",
+    )
+    .unwrap();
+
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--fail-on",
+        "none",
+    ]);
+
+    assert_eq!(out.code, 3, "stderr: {}", out.stderr);
+    let stderr = out.stderr.to_lowercase();
+    assert!(stderr.contains("truncated"), "got: {}", out.stderr);
+    assert!(stderr.contains("truncated.json"), "got: {}", out.stderr);
+    assert!(stderr.contains("line"), "got: {}", out.stderr);
+    assert!(stderr.contains("column"), "got: {}", out.stderr);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn baseline_from_clean_project_flags_all_findings_as_new() {
     let dir = std::env::temp_dir().join(format!("soroban-scan-cli-bl2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

@@ -38,6 +38,7 @@ Start here.
 ## Project
 
 - [Architecture](architecture/overview.md)
+- [Workspace layout and module map](architecture/workspace-layout.md)
 - [Architecture Decision Records](architecture/adr/README.md)
 - [Compatibility](compatibility.md)
 - [Security Model](security/security-model.md)

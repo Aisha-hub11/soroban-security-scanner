@@ -583,7 +583,7 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
         let text = std::fs::read_to_string(path).map_err(|e| {
             CliError::Runtime(format!("cannot read baseline {}: {e}", path.display()))
         })?;
-        let baseline = Baseline::from_text(&text).map_err(runtime)?;
+        let baseline = Baseline::from_text(&text).map_err(|error| baseline_error(path, error))?;
         let (pruned, removed) = baseline.prune(&outcome.findings);
         let format = args
             .baseline_format
@@ -609,7 +609,8 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
             let text = std::fs::read_to_string(path).map_err(|e| {
                 CliError::Runtime(format!("cannot read baseline {}: {e}", path.display()))
             })?;
-            baselines.push(Baseline::from_text(&text).map_err(runtime)?);
+            baselines
+                .push(Baseline::from_text(&text).map_err(|error| baseline_error(path, error))?);
         }
         let baseline = Baseline::merge(&baselines);
         outcome
@@ -1437,6 +1438,11 @@ fn serialize_baseline(baseline: &Baseline, format: BaselineFormatArg) -> CliResu
 
 fn runtime(error: soroban_scan_core::error::ScanError) -> CliError {
     CliError::Runtime(error.to_string())
+}
+
+/// Adds the baseline path to a parse error so CI logs identify the bad file.
+fn baseline_error(path: &Path, error: soroban_scan_core::error::ScanError) -> CliError {
+    CliError::Runtime(format!("{}: {error}", path.display()))
 }
 
 #[cfg(test)]
