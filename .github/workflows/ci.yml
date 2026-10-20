@@ -55,6 +55,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all --all-features
 
+  test-aarch64:
+    name: Test (ubuntu-24.04-arm)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all --all-features
+
   docs:
     name: Documentation links
     runs-on: ubuntu-latest

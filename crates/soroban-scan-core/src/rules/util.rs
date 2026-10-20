@@ -87,6 +87,9 @@ pub struct StringFact {
     pub line: usize,
     /// 1-based column.
     pub column: usize,
+    /// How the literal was constructed: `literal`, a macro name such as
+    /// `symbol_short`, or a constructor such as `Symbol::new`.
+    pub origin: String,
 }
 
 /// A binary arithmetic fact (`+`, `-`, or `*`).
@@ -249,6 +252,8 @@ struct FactsVisitor {
     facts: Facts,
     unsafe_depth: usize,
     client_vars: BTreeSet<String>,
+    current_macro: Option<String>,
+    current_constructor: Option<String>,
 }
 
 fn span_line_col<T: Spanned>(node: &T) -> (usize, usize) {
@@ -341,6 +346,7 @@ impl<'ast> Visit<'ast> for FactsVisitor {
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        let previous_constructor = self.current_constructor.clone();
         if let syn::Expr::Path(path) = &*node.func {
             let (line, column) = span_line_col(node);
             let name = path
@@ -351,6 +357,10 @@ impl<'ast> Visit<'ast> for FactsVisitor {
                 .unwrap_or_default();
             let span = node.span().byte_range();
             let (args, arg_positions) = render_args(&node.args);
+            let context = path.path.to_token_stream().to_string();
+            if name == "new" && context.contains("Symbol") {
+                self.current_constructor = Some("Symbol::new".to_string());
+            }
             self.facts.function_calls.push(CallFact {
                 name,
                 context: path.path.to_token_stream().to_string(),
@@ -365,6 +375,7 @@ impl<'ast> Visit<'ast> for FactsVisitor {
             });
         }
         visit::visit_expr_call(self, node);
+        self.current_constructor = previous_constructor;
     }
 
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
@@ -376,12 +387,28 @@ impl<'ast> Visit<'ast> for FactsVisitor {
             .map(|s| s.ident.to_string())
             .unwrap_or_default();
         self.facts.macros.push(MacroFact {
-            name,
+            name: name.clone(),
             line,
             column,
             text: truncate(&node.to_token_stream().to_string(), 160),
         });
+        // Macro token streams are opaque to the AST visitor, so capture the
+        // literal directly for the Soroban symbol macros.
+        if name == "symbol_short" || name == "symbol" {
+            let raw = node.tokens.to_string();
+            let value = raw.trim().trim_matches('"').to_string();
+            if !value.is_empty() {
+                self.facts.strings.push(StringFact {
+                    value,
+                    line,
+                    column,
+                    origin: name.clone(),
+                });
+            }
+        }
+        let previous_macro = self.current_macro.replace(name);
         visit::visit_macro(self, node);
+        self.current_macro = previous_macro;
     }
 
     fn visit_lit(&mut self, node: &'ast syn::Lit) {
@@ -391,6 +418,11 @@ impl<'ast> Visit<'ast> for FactsVisitor {
                 value: s.value(),
                 line,
                 column,
+                origin: self
+                    .current_constructor
+                    .clone()
+                    .or_else(|| self.current_macro.clone())
+                    .unwrap_or_else(|| "literal".to_string()),
             });
         }
         visit::visit_lit(self, node);
@@ -701,6 +733,21 @@ mod tests {
     fn facts_of(src: &str) -> Facts {
         let file = syn::parse_file(src).unwrap();
         facts_from_file(&file)
+    }
+
+    #[test]
+    fn records_string_literal_origin() {
+        let facts = facts_of(
+            r#"fn f(env: Env) {
+                let a = symbol_short!("key");
+                let b = Symbol::new(&env, "other");
+                let c = "plain";
+            }"#,
+        );
+        let origins: Vec<_> = facts.strings.iter().map(|s| s.origin.as_str()).collect();
+        assert!(origins.contains(&"symbol_short"));
+        assert!(origins.contains(&"Symbol::new"));
+        assert!(origins.contains(&"literal"));
     }
 
     #[test]

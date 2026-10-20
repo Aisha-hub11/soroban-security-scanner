@@ -3,7 +3,7 @@
 ## Rust toolchain
 
 - **Policy:** a recent stable Rust toolchain. CI builds and tests on stable for
-  Linux, Windows, and macOS.
+  Linux (x86_64 and aarch64), Windows, and macOS.
 - **Verified with:** Rust 1.97.1.
 - **MSRV:** not currently guaranteed. Historical toolchains could not be
   verified in the development environment, so no `rust-version` is declared. A
@@ -14,7 +14,8 @@
 
 | OS | Status |
 | -- | ------ |
-| Linux | Supported (CI tested) |
+| Linux x86_64 | Supported (CI tested) |
+| Linux aarch64 | Supported (CI tested on `ubuntu-24.04-arm`) |
 | macOS | Supported (CI tested) |
 | Windows | Supported (CI tested; MSVC and GNU toolchains) |
 
