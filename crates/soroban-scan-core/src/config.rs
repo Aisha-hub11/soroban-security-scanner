@@ -45,6 +45,15 @@ pub struct RulesConfig {
     pub severity_overrides: BTreeMap<String, Severity>,
     /// Per-rule confidence overrides.
     pub confidence_overrides: BTreeMap<String, Confidence>,
+    /// Optional per-rule wall-clock budget in milliseconds.
+    ///
+    /// Disabled by default. When set, each rule runs on a worker thread and is
+    /// abandoned if it exceeds the budget; the engine emits a diagnostic and
+    /// continues with the remaining rules. The budget is best-effort: a rule
+    /// that has already started may keep running in the background until it
+    /// returns, but its findings are discarded.
+    #[serde(rename = "time_budget_ms", alias = "rule_time_budget_ms")]
+    pub rule_time_budget_ms: Option<u64>,
 }
 
 impl RulesConfig {
@@ -184,6 +193,20 @@ disabled = ["SS-010"]
         .unwrap();
         assert_eq!(config.min_severity, Severity::Medium);
         assert!(!config.rules.is_enabled("SS-010"));
+    }
+
+    #[test]
+    fn rule_time_budget_is_disabled_by_default_and_parses() {
+        assert_eq!(RulesConfig::default().rule_time_budget_ms, None);
+
+        let config = ScanConfig::from_toml(
+            r#"
+[rules]
+time_budget_ms = 2500
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.rules.rule_time_budget_ms, Some(2500));
     }
 
     #[test]

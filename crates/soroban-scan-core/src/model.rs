@@ -199,6 +199,12 @@ pub enum DiagnosticCode {
     /// A rule produced a finding without evidence.
     #[serde(rename = "RULE-003")]
     RuleMissingEvidence,
+    /// A rule panicked; the scan continued without its findings.
+    #[serde(rename = "RULE-004")]
+    RulePanicked,
+    /// A rule exceeded its configured execution budget.
+    #[serde(rename = "RULE-005")]
+    RuleTimeBudgetExceeded,
     /// A rule override has no effect because the target is unknown or disabled.
     #[serde(rename = "CONFIG-001")]
     IneffectiveOverride,
@@ -218,6 +224,8 @@ impl DiagnosticCode {
             DiagnosticCode::RuleUnsafeLocation => "RULE-001",
             DiagnosticCode::RuleFileOutsideSet => "RULE-002",
             DiagnosticCode::RuleMissingEvidence => "RULE-003",
+            DiagnosticCode::RulePanicked => "RULE-004",
+            DiagnosticCode::RuleTimeBudgetExceeded => "RULE-005",
             DiagnosticCode::IneffectiveOverride => "CONFIG-001",
             DiagnosticCode::BaselineUnknownRule => "BASELINE-001",
         }
