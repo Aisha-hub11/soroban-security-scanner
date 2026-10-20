@@ -172,6 +172,43 @@ if: github.event.pull_request.head.repo.full_name == github.repository
 The bundled [`.github/workflows/pr-scan.yml`](../.github/workflows/pr-scan.yml)
 does this.
 
+### Private repositories
+
+Code scanning on private and internal repositories requires **GitHub Code
+Security** to be enabled for the repository (public repositories enable code
+scanning automatically on the first upload). If it is not enabled, the upload
+fails with:
+
+```text
+GitHub Code Security or GitHub Advanced Security must be enabled for this
+repository to use code scanning
+```
+
+Enable it under **Settings → Code security and analysis → Code scanning**, or
+ask an organization owner to enable GitHub Code Security for the repository. On
+GitHub Enterprise Server, code scanning also requires a GitHub Advanced Security
+license.
+
+The upload job needs one extra permission on private repositories:
+`actions: read`. Grant it alongside `contents: read` and
+`security-events: write`:
+
+```yaml
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+```
+
+Also confirm that the repository or organization Actions policy allows the
+`github/codeql-action` action, which provides `upload-sarif`. Uploads from fork
+pull requests are still rejected, regardless of repository visibility.
+
+See GitHub's documentation for
+[uploading a SARIF file](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/uploading-a-sarif-file-to-github)
+and
+[managing security and analysis settings](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository).
+
 ## Changed-file (pull request) analysis
 
 `--files-from` scans only the files listed in a file, which is how the PR
