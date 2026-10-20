@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ref, and `Cargo.lock`, with a graceful cache-miss fallback.
 - Add `main-scan.yml` to scan pushes to `main` against the committed baseline and
   upload SARIF; scheduled updates remain reviewable through `baseline-refresh.yml`.
-- Add ADR-0005, the dependency justification and review policy.- `rules --format markdown` emits the rule catalog table used in
+- Add ADR-0005, the dependency justification and review policy.
+- `rules --format markdown` emits the rule catalog table used in
   `docs/rules/README.md`, so the documentation table can be generated from the
   registry in CI instead of edited by hand.
 
@@ -32,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   storage mutations with no `events().publish` call, with a documented key list.
 - SS-012 "Unbounded collection growth in an entry point" (medium/low): flags
   `push`/`push_back`/`push_front` after a storage read with no length guard.
+- SS-015 "Deprecated Soroban SDK version" (low/medium): manifest-level finding
+  compared against the configurable `minimum_soroban_sdk` policy.
+- SS-016 "Unbounded data stored in instance storage" (medium/low): flags repeated
+  distinct instance-storage keys and collection growth.
+- SS-017 "Authorization after state mutation" (medium/medium): flags storage
+  mutations that occur before `require_auth`.
+- SS-002 now records constructor argument provenance and suppresses findings for
+  hardcoded, storage-configured, and current-contract client addresses.
 - FAQ (`docs/faq.md`) answering common questions about false positives, CI
   gating, supported versions, and reporting regressions.
 - SS-008 now includes a suggested `checked_*` alternative in its evidence and a

@@ -23,6 +23,33 @@ fn positive_and_negative_fixtures_match_expectations() {
 
     for meta in registry.metadata_sorted() {
         let dir = base.join(meta.id);
+        if meta.id == "SS-015" {
+            let positive = std::fs::read_to_string(dir.join("positive.toml"))
+                .unwrap_or_else(|_| panic!("missing positive.toml for {}", meta.id));
+            let pos = engine::scan_manifest_str("Cargo.toml", &positive, &config, &registry)
+                .expect("manifest fixture must parse");
+            assert!(
+                pos.findings
+                    .iter()
+                    .any(|finding| finding.rule_id == meta.id),
+                "{}: positive manifest fixture did not trigger the rule",
+                meta.id
+            );
+
+            let negative = std::fs::read_to_string(dir.join("negative.toml"))
+                .unwrap_or_else(|_| panic!("missing negative.toml for {}", meta.id));
+            let neg = engine::scan_manifest_str("Cargo.toml", &negative, &config, &registry)
+                .expect("manifest fixture must parse");
+            assert!(
+                !neg.findings
+                    .iter()
+                    .any(|finding| finding.rule_id == meta.id),
+                "{}: negative manifest fixture triggered the rule",
+                meta.id
+            );
+            checked += 1;
+            continue;
+        }
         let positive = std::fs::read_to_string(dir.join("positive.rs"))
             .unwrap_or_else(|_| panic!("missing positive fixture for {}", meta.id));
 
@@ -85,7 +112,7 @@ fn positive_and_negative_fixtures_match_expectations() {
         checked += 1;
     }
 
-    assert_eq!(checked, 15, "expected fixtures for all built-in rules");
+    assert_eq!(checked, 18, "expected fixtures for all built-in rules");
 }
 
 #[test]

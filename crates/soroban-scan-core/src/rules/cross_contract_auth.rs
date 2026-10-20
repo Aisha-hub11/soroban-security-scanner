@@ -58,6 +58,9 @@ impl Rule for CrossContractAuth {
                     continue;
                 }
                 for call in facts.cross_contract_constructors() {
+                    if has_trusted_client_address(&facts, call) {
+                        continue;
+                    }
                     let location = location_for(ctx, source, call.line, call.column);
                     let evidence = format!(
                         "cross-contract client constructed with no authorization in `{}`: {}",
@@ -68,6 +71,27 @@ impl Rule for CrossContractAuth {
             }
         }
     }
+}
+
+/// True when the client address is trusted configuration rather than an
+/// untrusted parameter.
+///
+/// Constructors take the environment first and the contract address second.
+/// A string literal, a storage read, or the current contract address is treated
+/// as trusted; any other expression (including a function parameter) is not.
+fn has_trusted_client_address(facts: &super::util::Facts, call: &super::util::CallFact) -> bool {
+    let Some(address) = call.args.get(1) else {
+        return false;
+    };
+    let lower = address.to_ascii_lowercase();
+    if address.contains('"')
+        || (lower.contains("storage") && lower.contains("get"))
+        || lower.contains("current_contract_address")
+    {
+        return true;
+    }
+    let variable = address.trim().trim_start_matches('&').trim();
+    facts.storage_vars.contains(variable)
 }
 
 #[cfg(test)]
@@ -123,6 +147,41 @@ mod tests {
                     client.transfer(&from, &id, &amount);
                 }
                 fn authorize(_env: &Env, from: &Address) { from.require_auth(); }
+            }
+            "#,
+            Box::new(CrossContractAuth),
+        );
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn does_not_flag_hardcoded_trusted_address() {
+        let findings = scan_rule(
+            r#"
+            #[contractimpl]
+            impl C {
+                pub fn pay(env: Env, amount: i128) {
+                    let client = TokenClient::new(&env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM");
+                    client.transfer(&env.current_contract_address(), &amount);
+                }
+            }
+            "#,
+            Box::new(CrossContractAuth),
+        );
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn does_not_flag_storage_configured_address() {
+        let findings = scan_rule(
+            r#"
+            #[contractimpl]
+            impl C {
+                pub fn pay(env: Env, amount: i128) {
+                    let token = env.storage().persistent().get(&DataKey::Token).unwrap();
+                    let client = TokenClient::new(&env, &token);
+                    client.transfer(&env.current_contract_address(), &amount);
+                }
             }
             "#,
             Box::new(CrossContractAuth),

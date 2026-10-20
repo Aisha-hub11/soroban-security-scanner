@@ -65,6 +65,9 @@ heuristically is reported as `severity: high, confidence: low`, never
 | [SS-012](detectors/SS-012.md) | Unbounded collection growth in an entry point | medium | low | resource-usage |
 | [SS-013](detectors/SS-013.md) | Cross-contract call before state update | high | low | cross-contract |
 | [SS-014](detectors/SS-014.md) | Token transfer amount without validation | medium | low | token |
+| [SS-015](detectors/SS-015.md) | Deprecated Soroban SDK version | low | medium | dependencies |
+| [SS-016](detectors/SS-016.md) | Unbounded data stored in instance storage | medium | low | storage |
+| [SS-017](detectors/SS-017.md) | Authorization after state mutation | medium | medium | authorization |
 | [SS-029](detectors/SS-029.md) | Public test or debug hook in a contract entry point | medium | medium | access-control |
 
 Each detector has a positive and negative fixture under

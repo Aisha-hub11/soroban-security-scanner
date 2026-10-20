@@ -45,6 +45,8 @@ pub struct CallFact {
     pub start_byte: usize,
     /// End byte offset in the parsed source.
     pub end_byte: usize,
+    /// Rendered arguments, in source order.
+    pub args: Vec<String>,
     /// Rendered call text (may be truncated by consumers).
     pub text: String,
 }
@@ -118,6 +120,8 @@ pub struct Facts {
     pub comparisons: Vec<ComparisonFact>,
     /// Method calls on a local cross-contract client variable.
     pub client_calls: Vec<CallFact>,
+    /// Local variables initialized from a storage read.
+    pub storage_vars: BTreeSet<String>,
     /// Whether the code contains `unsafe`.
     pub has_unsafe: bool,
     /// Locations of `unsafe` constructs.
@@ -266,6 +270,11 @@ impl<'ast> Visit<'ast> for FactsVisitor {
             column,
             start_byte: span.start,
             end_byte: span.end,
+            args: node
+                .args
+                .iter()
+                .map(|arg| truncate(&arg.to_token_stream().to_string(), 120))
+                .collect(),
             text: truncate(&node.to_token_stream().to_string(), 160),
         };
         if is_client_call {
@@ -291,6 +300,10 @@ impl<'ast> Visit<'ast> for FactsVisitor {
                     }
                 }
             }
+            let init_text = init.expr.to_token_stream().to_string().to_ascii_lowercase();
+            if init_text.contains("storage") && init_text.contains("get") {
+                self.facts.storage_vars.insert(pattern.ident.to_string());
+            }
         }
         visit::visit_local(self, node);
     }
@@ -312,6 +325,11 @@ impl<'ast> Visit<'ast> for FactsVisitor {
                 column,
                 start_byte: span.start,
                 end_byte: span.end,
+                args: node
+                    .args
+                    .iter()
+                    .map(|arg| truncate(&arg.to_token_stream().to_string(), 120))
+                    .collect(),
                 text: truncate(&node.to_token_stream().to_string(), 160),
             });
         }

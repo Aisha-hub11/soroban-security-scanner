@@ -50,6 +50,9 @@ exclude_tests = false
 # Follow symbolic links during discovery (disabled by default for safety).
 follow_symlinks = false
 
+# Minimum supported soroban-sdk version for SS-015.
+minimum_soroban_sdk = "21.0.0"
+
 [rules]
 # Rule ids to disable.
 disabled = []

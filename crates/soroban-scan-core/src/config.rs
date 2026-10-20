@@ -93,6 +93,8 @@ pub struct ScanConfig {
     pub exclude_tests: bool,
     /// Whether to follow symbolic links during discovery.
     pub follow_symlinks: bool,
+    /// Minimum supported `soroban-sdk` version for the SS-015 policy check.
+    pub minimum_soroban_sdk: String,
     /// Rule selection and overrides.
     pub rules: RulesConfig,
     /// Optional assistance layer configuration (disabled by default).
@@ -107,6 +109,7 @@ impl Default for ScanConfig {
             exclude: Vec::new(),
             exclude_tests: false,
             follow_symlinks: false,
+            minimum_soroban_sdk: "21.0.0".to_string(),
             rules: RulesConfig::default(),
             ai: AiConfig::default(),
         }

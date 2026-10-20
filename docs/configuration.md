@@ -48,6 +48,9 @@ exclude_tests = false
 # Follow symbolic links during discovery (disabled by default for safety)
 follow_symlinks = false
 
+# Minimum supported soroban-sdk version for SS-015
+minimum_soroban_sdk = "21.0.0"
+
 [rules]
 # Rule ids to disable
 disabled = ["SS-006"]
@@ -85,6 +88,7 @@ enabled = false
 | `exclude` | array of globs | `[]` | Paths excluded from discovery. |
 | `exclude_tests` | bool | `false` | Skip `#[cfg(test)]` items and directories named `tests`. |
 | `follow_symlinks` | bool | `false` | Follow symlinks (off by default for safety). |
+| `minimum_soroban_sdk` | string | `21.0.0` | Minimum supported `soroban-sdk` version for SS-015. |
 | `rules.disabled` | array of ids | `[]` | Rules never run. |
 | `rules.enabled` | array of ids | `[]` | If non-empty, the only rules that run. |
 | `rules.disabled_categories` | array of categories | `[]` | Rules in these categories never run. |

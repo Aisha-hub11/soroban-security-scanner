@@ -205,12 +205,23 @@ pub fn override_diagnostics(config: &ScanConfig, registry: &RuleRegistry) -> Vec
 
 /// Runs the scanner over a loaded project.
 pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig) -> ScanOutcome {
-    let ctx = AnalysisContext::new(&loaded.project, &loaded.sources);
-    let known: BTreeSet<String> = loaded
+    let ctx = AnalysisContext::new(
+        &loaded.project,
+        &loaded.sources,
+        &config.minimum_soroban_sdk,
+    );
+    let mut known: BTreeSet<String> = loaded
         .sources
         .iter()
         .map(|s| normalize_rel(&ctx.relative_path(&s.path)))
         .collect();
+    known.extend(
+        loaded
+            .project
+            .manifests
+            .iter()
+            .map(|manifest| normalize_rel(&ctx.relative_path(&manifest.path))),
+    );
 
     let mut diagnostics = loaded.project.diagnostics.clone();
     diagnostics.extend(override_diagnostics(config, registry));
@@ -590,6 +601,34 @@ pub fn scan_source_str(
         registry,
         config,
     )
+}
+
+/// Scans an in-memory manifest as a manifest-only project.
+///
+/// Useful for manifest-level rules such as SS-015 and for tests. No source
+/// files are parsed, so source-based rules have nothing to inspect.
+pub fn scan_manifest_str(
+    file_name: &str,
+    content: &str,
+    config: &ScanConfig,
+    registry: &RuleRegistry,
+) -> Result<ScanOutcome, ScanError> {
+    let manifest = crate::manifest::parse_manifest(Path::new(file_name), content)?;
+    let manifests = vec![manifest];
+    let soroban = crate::soroban::analyze_manifests(&manifests);
+    let project = Project {
+        root: PathBuf::from("."),
+        kind: crate::soroban::classify(&soroban),
+        manifests,
+        soroban,
+        source_files: 0,
+        diagnostics: Vec::new(),
+    };
+    let loaded = LoadedProject {
+        project,
+        sources: Vec::new(),
+    };
+    Ok(scan(&loaded, registry, config))
 }
 
 #[cfg(test)]
