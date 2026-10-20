@@ -95,8 +95,10 @@ enabled = false
 | `ai.provider` | string | *(none)* | Provider name; none is bundled. |
 | `ai.model` | string | *(none)* | Model identifier. |
 
-Unknown fields are rejected, as are references to unknown rule ids or
-categories.
+Unknown fields and category names are rejected. An unknown rule id in
+`disabled` or `enabled` is a usage error. An override that targets an unknown or
+disabled rule does not abort the scan; it emits a `CONFIG-001` diagnostic so the
+ineffective setting is visible.
 
 Category filters are applied before per-rule severity and confidence overrides.
 A rule is skipped when it is individually disabled, when it belongs to a

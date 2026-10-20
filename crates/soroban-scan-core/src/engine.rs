@@ -5,7 +5,7 @@
 //! applies configuration overrides and filters, de-duplicates, and sorts the
 //! result deterministically.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -28,6 +28,12 @@ pub struct ScanStats {
     pub rules_skipped: usize,
     /// Number of source files analyzed.
     pub files_analyzed: usize,
+    /// Number of source files that parsed successfully.
+    pub files_parsed: usize,
+    /// Number of source files that failed to parse.
+    pub files_failed: usize,
+    /// Number of discovered source files skipped before parsing.
+    pub files_skipped: usize,
     /// Findings produced before validation/filtering.
     pub findings_raw: usize,
     /// Findings dropped because they referenced an unknown file.
@@ -157,6 +163,46 @@ fn is_safe_relative(path: &Path) -> bool {
     !path.as_os_str().is_empty()
 }
 
+/// Returns diagnostics for severity or confidence overrides that cannot apply.
+///
+/// An override is ineffective when its rule id is unknown, the rule is disabled
+/// by default, or the rule is disabled by the effective configuration. The
+/// result is deterministic and contains one diagnostic per rule id.
+pub fn override_diagnostics(config: &ScanConfig, registry: &RuleRegistry) -> Vec<Diagnostic> {
+    let mut kinds: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for id in config.rules.severity_overrides.keys() {
+        kinds.entry(id.as_str()).or_default().push("severity");
+    }
+    for id in config.rules.confidence_overrides.keys() {
+        kinds.entry(id.as_str()).or_default().push("confidence");
+    }
+
+    kinds
+        .into_iter()
+        .filter_map(|(id, kinds)| {
+            let reason = match registry.by_id(id) {
+                None => "unknown rule id",
+                Some(rule) if !rule.enabled_by_default() => "rule is disabled by default",
+                Some(rule) => {
+                    let meta = rule.metadata();
+                    if config.rules.is_rule_enabled(meta.id, meta.category) {
+                        return None;
+                    }
+                    "rule is disabled by configuration"
+                }
+            };
+            Some(Diagnostic::warning(
+                DiagnosticCode::IneffectiveOverride,
+                format!(
+                    "{} override for {id} has no effect: {reason}",
+                    kinds.join(" and ")
+                ),
+                None,
+            ))
+        })
+        .collect()
+}
+
 /// Runs the scanner over a loaded project.
 pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig) -> ScanOutcome {
     let ctx = AnalysisContext::new(&loaded.project, &loaded.sources);
@@ -167,11 +213,22 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
         .collect();
 
     let mut diagnostics = loaded.project.diagnostics.clone();
+    diagnostics.extend(override_diagnostics(config, registry));
     let mut findings: Vec<Finding> = Vec::new();
     let mut stats = ScanStats {
         files_analyzed: loaded.sources.len(),
+        files_parsed: loaded
+            .sources
+            .iter()
+            .filter(|source| source.is_parsed())
+            .count(),
+        files_skipped: loaded
+            .project
+            .source_files
+            .saturating_sub(loaded.sources.len()),
         ..ScanStats::default()
     };
+    stats.files_failed = stats.files_analyzed - stats.files_parsed;
 
     for rule in registry.rules() {
         let meta = rule.metadata();
@@ -410,6 +467,9 @@ fn merge_stats(stats: &mut ScanStats, other: &ScanStats) {
         stats.rules_skipped = other.rules_skipped;
     }
     stats.files_analyzed += other.files_analyzed;
+    stats.files_parsed += other.files_parsed;
+    stats.files_failed += other.files_failed;
+    stats.files_skipped += other.files_skipped;
     stats.findings_raw += other.findings_raw;
     stats.findings_rejected += other.findings_rejected;
     stats.suppressions_detected += other.suppressions_detected;
@@ -782,6 +842,76 @@ mod tests {
             "a category-disabled rule must not be rescued by a severity override"
         );
         assert_eq!(outcome.stats.rules_skipped, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn inactive_overrides_emit_config_diagnostics() {
+        let root = project_fixture("override-diagnostics");
+        let loaded = project::load(&root, &ScanConfig::default().discovery_options()).unwrap();
+        let mut registry = RuleRegistry::new();
+        registry
+            .register(Box::new(OneFindingRule::new(Severity::High)))
+            .unwrap();
+
+        let config = ScanConfig {
+            rules: crate::config::RulesConfig {
+                disabled: vec!["SS-001".into()],
+                severity_overrides: [("SS-001".to_string(), Severity::Critical)]
+                    .into_iter()
+                    .collect(),
+                confidence_overrides: [("SS-999".to_string(), Confidence::High)]
+                    .into_iter()
+                    .collect(),
+                ..crate::config::RulesConfig::default()
+            },
+            ..ScanConfig::default()
+        };
+        let outcome = scan(&loaded, &registry, &config);
+
+        assert!(outcome.findings.is_empty());
+        let messages: Vec<&str> = outcome
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == crate::model::DiagnosticCode::IneffectiveOverride)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 2, "got: {messages:?}");
+        assert!(
+            messages.iter().any(|message| message.contains("SS-001")
+                && message.contains("disabled by configuration")),
+            "got: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("SS-999") && message.contains("unknown rule id")),
+            "got: {messages:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stats_include_parse_telemetry() {
+        let root = tmpdir("parse-telemetry");
+        write(
+            &root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        );
+        write(&root.join("src/lib.rs"), "fn good() {}\n");
+        write(&root.join("src/broken.rs"), "fn broken( {\n");
+
+        let mut loaded = project::load(&root, &ScanConfig::default().discovery_options()).unwrap();
+        // Simulate one discovered file that discovery skipped before parsing.
+        loaded.project.source_files = 3;
+
+        let outcome = scan(&loaded, &RuleRegistry::new(), &ScanConfig::default());
+        assert_eq!(outcome.stats.files_analyzed, 2);
+        assert_eq!(outcome.stats.files_parsed, 1);
+        assert_eq!(outcome.stats.files_failed, 1);
+        assert_eq!(outcome.stats.files_skipped, 1);
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

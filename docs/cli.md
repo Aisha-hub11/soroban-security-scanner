@@ -294,8 +294,10 @@ network access.
 - **json** — stable structured report (tool, project, stats, effective config,
   findings, diagnostics). `schema_version` identifies the report contract and is
   independent of the tool version. The `effective_config` object records the
-  settings used for the scan, excluding environment data and secrets. When
-  `--max-findings` omits findings, a `truncation` object reports the counts.
+  settings used for the scan, excluding environment data and secrets. `stats`
+  includes `files_parsed`, `files_failed`, and `files_skipped` so coverage gaps
+  are visible. When `--max-findings` omits findings, a `truncation` object
+  reports the counts.
 - **sarif** — SARIF 2.1.0 for GitHub code scanning and compatible tools.
 - **markdown** — report suitable for pull requests and documentation. The
   summary includes a severity table, the most frequent rule ids, and the
