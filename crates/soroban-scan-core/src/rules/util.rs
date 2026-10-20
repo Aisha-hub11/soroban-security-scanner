@@ -47,8 +47,22 @@ pub struct CallFact {
     pub end_byte: usize,
     /// Rendered arguments, in source order.
     pub args: Vec<String>,
+    /// Number of arguments in the call.
+    ///
+    /// Redundant with `args.len()` by construction; exposed explicitly so rule
+    /// authors can reason about arity without relying on the rendered list.
+    pub arg_count: usize,
+    /// 1-based `(line, column)` of each argument, in source order.
+    pub arg_positions: Vec<(usize, usize)>,
     /// Rendered call text (may be truncated by consumers).
     pub text: String,
+}
+
+impl CallFact {
+    /// Returns the rendered argument at `index`, if present.
+    pub fn argument(&self, index: usize) -> Option<&str> {
+        self.args.get(index).map(String::as_str)
+    }
 }
 
 /// A macro invocation fact.
@@ -242,12 +256,31 @@ fn span_line_col<T: Spanned>(node: &T) -> (usize, usize) {
     (start.line, start.column + 1)
 }
 
+/// Truncates `text` to at most `max` bytes without splitting a UTF-8 code point.
+///
+/// Call arguments come from untrusted source, so truncation must never panic on
+/// multi-byte characters.
 fn truncate(text: &str, max: usize) -> String {
     if text.len() <= max {
-        text.to_string()
-    } else {
-        format!("{}...", &text[..max])
+        return text.to_string();
     }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &text[..end])
+}
+
+fn render_args(
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>,
+) -> (Vec<String>, Vec<(usize, usize)>) {
+    let mut rendered = Vec::with_capacity(args.len());
+    let mut positions = Vec::with_capacity(args.len());
+    for arg in args {
+        rendered.push(truncate(&arg.to_token_stream().to_string(), 120));
+        positions.push(span_line_col(arg));
+    }
+    (rendered, positions)
 }
 
 impl<'ast> Visit<'ast> for FactsVisitor {
@@ -263,6 +296,7 @@ impl<'ast> Visit<'ast> for FactsVisitor {
         let is_client_call = receiver_ident
             .as_ref()
             .is_some_and(|name| self.client_vars.contains(name));
+        let (args, arg_positions) = render_args(&node.args);
         let fact = CallFact {
             name: node.method.to_string(),
             context: node.receiver.to_token_stream().to_string(),
@@ -270,11 +304,9 @@ impl<'ast> Visit<'ast> for FactsVisitor {
             column,
             start_byte: span.start,
             end_byte: span.end,
-            args: node
-                .args
-                .iter()
-                .map(|arg| truncate(&arg.to_token_stream().to_string(), 120))
-                .collect(),
+            arg_count: args.len(),
+            args,
+            arg_positions,
             text: truncate(&node.to_token_stream().to_string(), 160),
         };
         if is_client_call {
@@ -318,6 +350,7 @@ impl<'ast> Visit<'ast> for FactsVisitor {
                 .map(|s| s.ident.to_string())
                 .unwrap_or_default();
             let span = node.span().byte_range();
+            let (args, arg_positions) = render_args(&node.args);
             self.facts.function_calls.push(CallFact {
                 name,
                 context: path.path.to_token_stream().to_string(),
@@ -325,11 +358,9 @@ impl<'ast> Visit<'ast> for FactsVisitor {
                 column,
                 start_byte: span.start,
                 end_byte: span.end,
-                args: node
-                    .args
-                    .iter()
-                    .map(|arg| truncate(&arg.to_token_stream().to_string(), 120))
-                    .collect(),
+                arg_count: args.len(),
+                args,
+                arg_positions,
                 text: truncate(&node.to_token_stream().to_string(), 160),
             });
         }
@@ -781,6 +812,46 @@ mod tests {
         let bad = format!("X{}", "A".repeat(55));
         assert!(!looks_like_stellar_address(&bad));
         assert!(!looks_like_stellar_address("too-short"));
+    }
+
+    #[test]
+    fn captures_method_call_argument_metadata() {
+        let facts = facts_of(
+            "fn f(env: Env, to: Address, amount: i128) { client.transfer(to, amount, memo); }",
+        );
+        let call = &facts.method_calls[0];
+        assert_eq!(call.name, "transfer");
+        assert_eq!(call.arg_count, 3);
+        assert_eq!(call.args, vec!["to", "amount", "memo"]);
+        assert_eq!(call.argument(0), Some("to"));
+        assert_eq!(call.argument(2), Some("memo"));
+        assert_eq!(call.argument(3), None);
+        assert_eq!(call.arg_positions.len(), 3);
+        assert_eq!(call.arg_positions[0].0, 1);
+        assert!(call.arg_positions[1].1 > call.arg_positions[0].1);
+    }
+
+    #[test]
+    fn captures_function_call_argument_metadata() {
+        let facts = facts_of("fn f() { transfer(&env, &from, &to, amount); }");
+        let call = &facts.function_calls[0];
+        assert_eq!(call.name, "transfer");
+        assert_eq!(call.arg_count, 4);
+        assert_eq!(call.args, vec!["& env", "& from", "& to", "amount"]);
+        assert_eq!(call.arg_positions.len(), 4);
+    }
+
+    #[test]
+    fn call_argument_rendering_truncates_safely() {
+        let long = "a".repeat(200);
+        let src = format!("fn f() {{ g({long}, \"ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"); }}");
+        let facts = facts_of(&src);
+        let call = &facts.function_calls[0];
+        assert_eq!(call.arg_count, 2);
+        assert!(call.args[0].ends_with("..."));
+        assert!(call.args[0].len() <= 123);
+        assert!(call.args[1].ends_with("..."));
+        assert!(call.args[1].is_char_boundary(call.args[1].len() - 3));
     }
 
     #[test]

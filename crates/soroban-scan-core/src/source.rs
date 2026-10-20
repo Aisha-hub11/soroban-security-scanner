@@ -72,6 +72,51 @@ impl ItemKind {
     }
 }
 
+/// Kind of a Soroban contract type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractTypeKind {
+    /// A struct annotated with `#[contracttype]`.
+    Struct,
+    /// An enum annotated with `#[contracttype]` or `#[contracterror]`.
+    Enum,
+}
+
+impl ContractTypeKind {
+    /// Stable lowercase name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ContractTypeKind::Struct => "struct",
+            ContractTypeKind::Enum => "enum",
+        }
+    }
+}
+
+/// A struct or enum that participates in the contract's serialized interface.
+///
+/// Types annotated with `#[contracttype]` define stored and transported data,
+/// while `#[contracterror]` enums define the contract's error variants. Both are
+/// kept separate from function facts because detectors need the data model
+/// independently of any function body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractTypeSummary {
+    /// Type name.
+    pub name: String,
+    /// Whether the declaration is a struct or an enum.
+    pub kind: ContractTypeKind,
+    /// Declared visibility (`pub`).
+    pub is_public: bool,
+    /// Attribute path strings (for example `contracttype`).
+    pub attributes: Vec<String>,
+    /// Variant names for enums; empty for structs.
+    pub variants: Vec<String>,
+    /// 1-based line.
+    pub line: usize,
+    /// 1-based column.
+    pub column: usize,
+    /// 1-based end line.
+    pub end_line: usize,
+}
+
 /// A function parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamSummary {
@@ -140,6 +185,12 @@ pub struct FunctionSummary {
     pub return_type: Option<String>,
     /// Enclosing impl/trait name, if any.
     pub in_impl: Option<String>,
+    /// Rendered trait path when the function is defined in a trait impl.
+    ///
+    /// Inherent impl methods and free functions have `None`. Trait
+    /// definitions also have `None` because their methods are not bound to a
+    /// concrete implementing type.
+    pub trait_path: Option<String>,
     /// Attribute path strings on the enclosing impl block.
     pub impl_attributes: Vec<String>,
     /// True when the function is an exported contract entry point
@@ -162,6 +213,8 @@ pub struct ItemSummary {
     pub end_line: usize,
     /// Whether the item is `pub`.
     pub is_public: bool,
+    /// Rendered trait path for `impl Trait for Type` blocks, if any.
+    pub trait_path: Option<String>,
     /// Attribute path strings.
     pub attributes: Vec<String>,
 }
@@ -180,6 +233,8 @@ pub struct ParsedSource {
     pub items: Vec<ItemSummary>,
     /// Function definitions.
     pub functions: Vec<FunctionSummary>,
+    /// `#[contracttype]`/`#[contracterror]` structs and enums.
+    pub contract_types: Vec<ContractTypeSummary>,
     /// Locations of contract definitions, formatted as `path:line`.
     pub contract_definitions: Vec<String>,
     /// Inline suppression directives detected in the file.
@@ -295,6 +350,7 @@ fn record_contract_attrs(
 
 struct ImplContext {
     name: String,
+    trait_path: Option<String>,
     attributes: Vec<String>,
 }
 
@@ -333,6 +389,7 @@ fn make_function(
         params: params_of(sig),
         return_type: return_of(sig),
         in_impl: impl_ctx.map(|c| c.name.clone()),
+        trait_path: impl_ctx.and_then(|c| c.trait_path.clone()),
         impl_attributes,
         is_contract_entry_point,
     }
@@ -346,6 +403,7 @@ fn walk_items(
     file: &Path,
     out_items: &mut Vec<ItemSummary>,
     out_functions: &mut Vec<FunctionSummary>,
+    out_contract_types: &mut Vec<ContractTypeSummary>,
     out_contract: &mut Vec<String>,
 ) {
     for item in items {
@@ -373,15 +431,22 @@ fn walk_items(
             }
             syn::Item::Impl(imp) => {
                 let name = imp.self_ty.to_token_stream().to_string();
-                out_items.push(item_summary(
+                let trait_path = imp
+                    .trait_
+                    .as_ref()
+                    .map(|(_, path, _)| path.to_token_stream().to_string());
+                let mut summary = item_summary(
                     ItemKind::Impl,
                     name.clone(),
                     &attrs,
                     false,
                     (line, column, end_line),
-                ));
+                );
+                summary.trait_path = trait_path.clone();
+                out_items.push(summary);
                 let ctx = ImplContext {
                     name,
+                    trait_path,
                     attributes: attribute_paths(&attrs),
                 };
                 for impl_item in &imp.items {
@@ -417,6 +482,7 @@ fn walk_items(
                 ));
                 let ctx = ImplContext {
                     name,
+                    trait_path: None,
                     attributes: attribute_paths(&attrs),
                 };
                 for trait_item in &tr.items {
@@ -454,24 +520,50 @@ fn walk_items(
                         file,
                         out_items,
                         out_functions,
+                        out_contract_types,
                         out_contract,
                     );
                 }
             }
-            syn::Item::Struct(s) => out_items.push(item_summary(
-                ItemKind::Struct,
-                s.ident.to_string(),
-                &attrs,
-                vis_is_public(&s.vis),
-                (line, column, end_line),
-            )),
-            syn::Item::Enum(e) => out_items.push(item_summary(
-                ItemKind::Enum,
-                e.ident.to_string(),
-                &attrs,
-                vis_is_public(&e.vis),
-                (line, column, end_line),
-            )),
+            syn::Item::Struct(s) => {
+                out_items.push(item_summary(
+                    ItemKind::Struct,
+                    s.ident.to_string(),
+                    &attrs,
+                    vis_is_public(&s.vis),
+                    (line, column, end_line),
+                ));
+                if has_contract_type_attr(&attrs) {
+                    out_contract_types.push(contract_type_summary(
+                        s.ident.to_string(),
+                        ContractTypeKind::Struct,
+                        &attrs,
+                        vis_is_public(&s.vis),
+                        Vec::new(),
+                        (line, column, end_line),
+                    ));
+                }
+            }
+            syn::Item::Enum(e) => {
+                out_items.push(item_summary(
+                    ItemKind::Enum,
+                    e.ident.to_string(),
+                    &attrs,
+                    vis_is_public(&e.vis),
+                    (line, column, end_line),
+                ));
+                if has_contract_type_attr(&attrs) {
+                    let variants = e.variants.iter().map(|v| v.ident.to_string()).collect();
+                    out_contract_types.push(contract_type_summary(
+                        e.ident.to_string(),
+                        ContractTypeKind::Enum,
+                        &attrs,
+                        vis_is_public(&e.vis),
+                        variants,
+                        (line, column, end_line),
+                    ));
+                }
+            }
             syn::Item::Union(u) => out_items.push(item_summary(
                 ItemKind::Union,
                 u.ident.to_string(),
@@ -580,7 +672,40 @@ fn item_summary(
         column: span.1,
         end_line: span.2,
         is_public,
+        trait_path: None,
         attributes: attribute_paths(attrs),
+    }
+}
+
+/// Returns true when the attributes include `#[contracttype]` or
+/// `#[contracterror]`, including fully qualified forms such as
+/// `#[soroban_sdk::contracttype]`.
+fn has_contract_type_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        matches!(
+            attribute_path(attr).rsplit("::").next(),
+            Some("contracttype" | "contracterror")
+        )
+    })
+}
+
+fn contract_type_summary(
+    name: String,
+    kind: ContractTypeKind,
+    attrs: &[syn::Attribute],
+    is_public: bool,
+    variants: Vec<String>,
+    span: (usize, usize, usize),
+) -> ContractTypeSummary {
+    ContractTypeSummary {
+        name,
+        kind,
+        is_public,
+        attributes: attribute_paths(attrs),
+        variants,
+        line: span.0,
+        column: span.1,
+        end_line: span.2,
     }
 }
 
@@ -785,6 +910,7 @@ pub fn parse_source_with_options(
             )),
             items: Vec::new(),
             functions: Vec::new(),
+            contract_types: Vec::new(),
             contract_definitions: Vec::new(),
             suppressions: Vec::new(),
         };
@@ -797,6 +923,7 @@ pub fn parse_source_with_options(
             }
             let mut items = Vec::new();
             let mut functions = Vec::new();
+            let mut contract_types = Vec::new();
             let mut contract_definitions = Vec::new();
             walk_items(
                 &file.items,
@@ -805,6 +932,7 @@ pub fn parse_source_with_options(
                 path,
                 &mut items,
                 &mut functions,
+                &mut contract_types,
                 &mut contract_definitions,
             );
             let suppressions = crate::suppression::detect(content, path, &item_spans(&file));
@@ -815,6 +943,7 @@ pub fn parse_source_with_options(
                 parse_error: None,
                 items,
                 functions,
+                contract_types,
                 contract_definitions,
                 suppressions,
             }
@@ -826,6 +955,7 @@ pub fn parse_source_with_options(
             parse_error: Some(err.to_string()),
             items: Vec::new(),
             functions: Vec::new(),
+            contract_types: Vec::new(),
             contract_definitions: Vec::new(),
             suppressions: Vec::new(),
         },
@@ -1119,6 +1249,173 @@ impl C {
         assert_eq!(entry[0].params.len(), 2);
         assert_eq!(entry[0].params[1].name, "amount");
         assert_eq!(entry[0].in_impl.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn records_trait_paths_on_impls_and_functions() {
+        let src = r#"
+trait Token {
+    fn transfer(&self);
+}
+
+struct Vault;
+
+impl Vault {
+    fn inherent(&self) {}
+}
+
+impl Token for Vault {
+    fn transfer(&self) {}
+}
+"#;
+        let s = parse(src);
+
+        let inherent = s.functions.iter().find(|f| f.name == "inherent").unwrap();
+        assert_eq!(inherent.in_impl.as_deref(), Some("Vault"));
+        assert_eq!(inherent.trait_path, None);
+
+        let transfer = s
+            .functions
+            .iter()
+            .find(|f| f.name == "transfer" && f.in_impl.as_deref() == Some("Vault"))
+            .unwrap();
+        assert_eq!(transfer.trait_path.as_deref(), Some("Token"));
+
+        let trait_method = s
+            .functions
+            .iter()
+            .find(|f| f.name == "transfer" && f.in_impl.as_deref() == Some("Token"))
+            .unwrap();
+        assert_eq!(trait_method.trait_path, None);
+
+        let trait_impl = s
+            .items
+            .iter()
+            .find(|item| item.kind == ItemKind::Impl && item.trait_path.is_some())
+            .unwrap();
+        assert_eq!(trait_impl.trait_path.as_deref(), Some("Token"));
+        assert_eq!(
+            s.items
+                .iter()
+                .filter(|item| item.kind == ItemKind::Impl)
+                .count(),
+            2
+        );
+
+        // Trait definitions are not implementations.
+        let trait_item = s
+            .items
+            .iter()
+            .find(|item| item.kind == ItemKind::Trait)
+            .unwrap();
+        assert_eq!(trait_item.trait_path, None);
+    }
+
+    #[test]
+    fn records_qualified_trait_paths() {
+        let src = r#"
+mod token {
+    pub trait Token {}
+}
+
+struct Vault;
+
+impl token::Token for Vault {
+    fn transfer(&self) {}
+}
+"#;
+        let s = parse(src);
+        let transfer = s.functions.iter().find(|f| f.name == "transfer").unwrap();
+        assert_eq!(transfer.trait_path.as_deref(), Some("token :: Token"));
+    }
+
+    #[test]
+    fn inventories_contracttype_and_contracterror() {
+        let src = r#"
+#[contracttype]
+pub struct Config {
+    pub admin: Address,
+}
+
+#[contracttype]
+pub enum DataKey {
+    Admin,
+    Balance(Address),
+}
+
+#[contracterror]
+pub enum VaultError {
+    NotInitialized = 1,
+    Unauthorized = 2,
+}
+
+struct Plain;
+"#;
+        let s = parse(src);
+        assert_eq!(s.contract_types.len(), 3);
+
+        let config = s
+            .contract_types
+            .iter()
+            .find(|ty| ty.name == "Config")
+            .unwrap();
+        assert_eq!(config.kind, ContractTypeKind::Struct);
+        assert!(config.is_public);
+        assert!(config.attributes.iter().any(|a| a == "contracttype"));
+        assert!(config.variants.is_empty());
+        assert_eq!(config.line, 2);
+
+        let key = s
+            .contract_types
+            .iter()
+            .find(|ty| ty.name == "DataKey")
+            .unwrap();
+        assert_eq!(key.kind, ContractTypeKind::Enum);
+        assert_eq!(key.variants, vec!["Admin", "Balance"]);
+
+        let error = s
+            .contract_types
+            .iter()
+            .find(|ty| ty.name == "VaultError")
+            .unwrap();
+        assert_eq!(error.kind, ContractTypeKind::Enum);
+        assert_eq!(error.variants, vec!["NotInitialized", "Unauthorized"]);
+        assert!(error.attributes.iter().any(|a| a == "contracterror"));
+
+        assert!(!s.contract_types.iter().any(|ty| ty.name == "Plain"));
+    }
+
+    #[test]
+    fn inventories_qualified_contract_type_attributes() {
+        let src = r#"
+#[soroban_sdk::contracttype]
+pub struct Config {
+    pub admin: Address,
+}
+"#;
+        let s = parse(src);
+        assert_eq!(s.contract_types.len(), 1);
+        assert_eq!(s.contract_types[0].name, "Config");
+    }
+
+    #[test]
+    fn fixture_inventories_contract_types() {
+        let s = parse(include_str!(
+            "../../../fixtures/projects/contract-types/src/lib.rs"
+        ));
+        assert!(s.is_parsed());
+        assert!(s
+            .contract_types
+            .iter()
+            .any(|ty| ty.name == "DataKey" && ty.kind == ContractTypeKind::Enum));
+        assert!(s
+            .contract_types
+            .iter()
+            .any(|ty| ty.name == "VaultError" && ty.kind == ContractTypeKind::Enum));
+        assert!(s
+            .contract_types
+            .iter()
+            .any(|ty| ty.name == "Config" && ty.kind == ContractTypeKind::Struct));
     }
 
     #[test]

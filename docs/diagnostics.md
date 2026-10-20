@@ -29,6 +29,8 @@ can classify or suppress them without parsing the human-readable message.
 | `RULE-001` | error | A rule produced a location that is not a safe relative path; the finding was rejected. |
 | `RULE-002` | error | A rule reported a file outside the analyzed set; the finding was rejected. |
 | `RULE-003` | error | A rule produced a finding without evidence; the finding was rejected. |
+| `RULE-004` | error | A rule panicked; the panic was isolated and its findings were discarded. |
+| `RULE-005` | warning | A rule exceeded its configured time budget; its findings were discarded. |
 | `CONFIG-001` | warning | A severity or confidence override has no effect because its rule is unknown or disabled. |
 | `BASELINE-001` | warning | A baseline references a rule id that is no longer registered; the entry remains forward compatible. |
 

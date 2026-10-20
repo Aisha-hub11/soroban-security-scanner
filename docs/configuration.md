@@ -71,6 +71,10 @@ severity_overrides = { "SS-007" = "low" }
 # Per-rule confidence overrides
 confidence_overrides = { }
 
+# Best-effort per-rule execution budget in milliseconds (disabled by default).
+# A rule that overruns is reported with RULE-005 and its findings are discarded.
+# time_budget_ms = 5000
+
 [ai]
 # Optional assistance layer. Disabled by default; the deterministic scanner is
 # authoritative. See docs/ai.md.
@@ -95,6 +99,7 @@ enabled = false
 | `rules.enabled_categories` | array of categories | `[]` | If non-empty, only rules in these categories run. |
 | `rules.severity_overrides` | map id→severity | `{}` | Replace a rule's default severity. |
 | `rules.confidence_overrides` | map id→confidence | `{}` | Replace a rule's default confidence. |
+| `rules.time_budget_ms` | integer | *(disabled)* | Best-effort per-rule wall-clock budget in milliseconds. Overrunning rules are reported with `RULE-005` and their findings are discarded. The budget cannot preempt a rule already running, so a pathological rule still consumes its own runtime; it only bounds what the rule contributes to the scan. |
 | `ai.enabled` | bool | `false` | Enable the optional assistance layer (fails closed without a provider). |
 | `ai.provider` | string | *(none)* | Provider name; none is bundled. |
 | `ai.model` | string | *(none)* | Model identifier. |
@@ -132,7 +137,7 @@ user paths.
 2. Configuration file (`--config`, scan root, or current directory); skipped
    entirely with `--no-config`.
 3. Command-line flags (`--min-severity`, `--min-confidence`, `--exclude`,
-   `--disable`, `--rule`).
+   `--disable`, `--rule`, `--rule-time-budget-ms`).
 
 ## Example: strict CI policy
 
