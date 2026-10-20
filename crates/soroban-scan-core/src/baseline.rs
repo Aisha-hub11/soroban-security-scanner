@@ -5,16 +5,21 @@
 //! resolved. Fingerprints deliberately exclude line numbers so unrelated code
 //! shifts do not resurrect known findings.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::ScanError;
 use crate::finding::Finding;
+use crate::model::{Diagnostic, DiagnosticCode};
+use crate::registry::RuleRegistry;
 use crate::severity::Severity;
 
 /// Current baseline file format version.
 pub const BASELINE_VERSION: u32 = 1;
+
+/// Marker written to TOML baselines.
+pub const TOML_FORMAT_MARKER: &str = "soroban-scan-baseline";
 
 /// A single baseline entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +45,9 @@ pub struct Baseline {
     pub tool: String,
     /// Tool version that produced the baseline.
     pub tool_version: String,
+    /// Optional format marker, present in TOML baselines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
     /// Accepted findings, sorted by fingerprint for determinism.
     pub findings: Vec<BaselineEntry>,
 }
@@ -63,6 +71,7 @@ impl Baseline {
             version: BASELINE_VERSION,
             tool: crate::TOOL_NAME.to_string(),
             tool_version: crate::VERSION.to_string(),
+            format: None,
             findings: entries,
         }
     }
@@ -90,13 +99,127 @@ impl Baseline {
     pub fn from_json(text: &str) -> Result<Self, ScanError> {
         let baseline: Baseline = serde_json::from_str(text)
             .map_err(|e| ScanError::Baseline(format!("invalid baseline JSON: {e}")))?;
-        if baseline.version != BASELINE_VERSION {
+        baseline.validate_version()?;
+        Ok(baseline)
+    }
+
+    /// Serializes the baseline to pretty TOML with a format marker.
+    pub fn to_toml(&self) -> Result<String, ScanError> {
+        let mut baseline = self.clone();
+        baseline.format = Some(TOML_FORMAT_MARKER.to_string());
+        toml::to_string_pretty(&baseline)
+            .map_err(|e| ScanError::Baseline(format!("cannot serialize baseline TOML: {e}")))
+    }
+
+    /// Parses a baseline from TOML.
+    pub fn from_toml(text: &str) -> Result<Self, ScanError> {
+        let baseline: Baseline = toml::from_str(text)
+            .map_err(|e| ScanError::Baseline(format!("invalid baseline TOML: {e}")))?;
+        baseline.validate_version()?;
+        Ok(baseline)
+    }
+
+    /// Parses a baseline, detecting JSON or TOML from the content.
+    pub fn from_text(text: &str) -> Result<Self, ScanError> {
+        if text.trim_start().starts_with('{') {
+            Self::from_json(text)
+        } else {
+            Self::from_toml(text)
+        }
+    }
+
+    fn validate_version(&self) -> Result<(), ScanError> {
+        if self.version != BASELINE_VERSION {
             return Err(ScanError::Baseline(format!(
                 "unsupported baseline version {} (expected {})",
-                baseline.version, BASELINE_VERSION
+                self.version, BASELINE_VERSION
             )));
         }
-        Ok(baseline)
+        Ok(())
+    }
+
+    /// Merges baselines by fingerprint in deterministic order.
+    ///
+    /// Entries are sorted by fingerprint and then severity before de-duplication,
+    /// so the first entry kept for a fingerprint is stable across input order.
+    pub fn merge(baselines: &[Baseline]) -> Self {
+        let mut entries: Vec<BaselineEntry> = baselines
+            .iter()
+            .flat_map(|baseline| baseline.findings.iter().cloned())
+            .collect();
+        entries.sort_by(|a, b| {
+            a.fingerprint
+                .cmp(&b.fingerprint)
+                .then_with(|| a.severity.cmp(&b.severity))
+                .then_with(|| a.rule_id.cmp(&b.rule_id))
+                .then_with(|| a.file.cmp(&b.file))
+                .then_with(|| a.title.cmp(&b.title))
+        });
+        entries.dedup_by(|a, b| a.fingerprint == b.fingerprint);
+        Baseline {
+            version: BASELINE_VERSION,
+            tool: crate::TOOL_NAME.to_string(),
+            tool_version: crate::VERSION.to_string(),
+            format: None,
+            findings: entries,
+        }
+    }
+
+    /// Removes entries that are no longer present in `findings`.
+    ///
+    /// Returns the pruned baseline and the number of removed entries.
+    pub fn prune(&self, findings: &[Finding]) -> (Self, usize) {
+        let current: BTreeSet<&str> = findings
+            .iter()
+            .map(|finding| finding.fingerprint.as_str())
+            .collect();
+        let before = self.findings.len();
+        let mut entries: Vec<BaselineEntry> = self
+            .findings
+            .iter()
+            .filter(|entry| current.contains(entry.fingerprint.as_str()))
+            .cloned()
+            .collect();
+        entries.sort_by(|a, b| a.fingerprint.cmp(&b.fingerprint));
+        let removed = before - entries.len();
+        (
+            Baseline {
+                version: self.version,
+                tool: self.tool.clone(),
+                tool_version: self.tool_version.clone(),
+                format: self.format.clone(),
+                findings: entries,
+            },
+            removed,
+        )
+    }
+
+    /// Diagnostics for baseline entries whose rule ids are no longer registered.
+    ///
+    /// Unknown ids are warnings: older baselines remain usable and forward
+    /// compatible, but stale entries are surfaced to the user.
+    pub fn unknown_rule_diagnostics(&self, registry: &RuleRegistry) -> Vec<Diagnostic> {
+        let mut unknown: BTreeMap<&str, usize> = BTreeMap::new();
+        for entry in &self.findings {
+            if registry.by_id(&entry.rule_id).is_none() {
+                *unknown.entry(entry.rule_id.as_str()).or_insert(0) += 1;
+            }
+        }
+        unknown
+            .into_iter()
+            .map(|(rule_id, count)| {
+                let suffix = if count == 1 {
+                    String::new()
+                } else {
+                    format!(" ({count} entries)")
+                };
+                Diagnostic::warning(
+                    DiagnosticCode::BaselineUnknownRule,
+                    format!("baseline references unknown rule id `{rule_id}`{suffix}"),
+                    None,
+                )
+            })
+            .collect()
     }
 }
 
@@ -193,6 +316,88 @@ mod tests {
         let parsed = Baseline::from_json(&json).unwrap();
         assert_eq!(baseline, parsed);
         assert_eq!(parsed.findings.len(), 2);
+    }
+
+    #[test]
+    fn toml_and_json_are_cross_compatible() {
+        let findings = vec![finding("src/lib.rs", 10, "a")];
+        let baseline = Baseline::from_findings(&findings);
+
+        let json = baseline.to_json().unwrap();
+        let toml = baseline.to_toml().unwrap();
+        assert!(toml.contains("format = \"soroban-scan-baseline\""));
+
+        assert_eq!(baseline, Baseline::from_json(&json).unwrap());
+        let parsed_toml = Baseline::from_toml(&toml).unwrap();
+        assert_eq!(parsed_toml.with_normalized_format(), baseline);
+        let parsed_auto_json = Baseline::from_text(&json).unwrap();
+        assert_eq!(parsed_auto_json, baseline);
+        let parsed_auto_toml = Baseline::from_text(&toml).unwrap();
+        assert_eq!(parsed_auto_toml.with_normalized_format(), baseline);
+    }
+
+    impl Baseline {
+        fn with_normalized_format(mut self) -> Self {
+            self.format = None;
+            self
+        }
+    }
+
+    fn entry(fingerprint: &str, severity: Severity) -> BaselineEntry {
+        BaselineEntry {
+            fingerprint: fingerprint.to_string(),
+            rule_id: "SS-001".to_string(),
+            file: "src/lib.rs".to_string(),
+            severity,
+            title: "Test".to_string(),
+        }
+    }
+
+    #[test]
+    fn merge_is_deterministic_and_deduplicates() {
+        let a = Baseline {
+            version: BASELINE_VERSION,
+            tool: "soroban-scan".to_string(),
+            tool_version: "0.1.0".to_string(),
+            format: None,
+            findings: vec![entry("b", Severity::High), entry("a", Severity::Low)],
+        };
+        let b = Baseline {
+            version: BASELINE_VERSION,
+            tool: "soroban-scan".to_string(),
+            tool_version: "0.1.0".to_string(),
+            format: None,
+            findings: vec![entry("b", Severity::Medium), entry("c", Severity::High)],
+        };
+        let merged = Baseline::merge(&[a.clone(), b.clone()]);
+        let merged_reversed = Baseline::merge(&[b, a]);
+        assert_eq!(merged, merged_reversed);
+        let fingerprints: Vec<_> = merged
+            .findings
+            .iter()
+            .map(|entry| entry.fingerprint.as_str())
+            .collect();
+        assert_eq!(fingerprints, vec!["a", "b", "c"]);
+        assert_eq!(merged.findings[1].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn prune_removes_resolved_entries() {
+        let kept = finding("src/lib.rs", 10, "keep");
+        let baseline = Baseline::from_findings(&[kept.clone(), finding("src/lib.rs", 20, "gone")]);
+        let (pruned, removed) = baseline.prune(&[kept]);
+        assert_eq!(removed, 1);
+        assert_eq!(pruned.findings.len(), 1);
+    }
+
+    #[test]
+    fn unknown_rule_ids_are_diagnostics() {
+        let mut baseline = Baseline::from_findings(&[finding("src/lib.rs", 10, "a")]);
+        baseline.findings[0].rule_id = "SS-999".to_string();
+        let diagnostics = baseline.unknown_rule_diagnostics(&RuleRegistry::with_default_rules());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, DiagnosticCode::BaselineUnknownRule);
+        assert!(diagnostics[0].message.contains("SS-999"));
     }
 
     #[test]

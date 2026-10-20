@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rules --format markdown` emits the rule catalog table used in
   `docs/rules/README.md`, so the documentation table can be generated from the
   registry in CI instead of edited by hand.
+
 - Markdown scan reports now include `Top rules` and `Categories` summary tables,
   counted deterministically and sorted by count then id or name.
 - `init --interactive` asks for minimum severity, enabled categories, and exclude
@@ -73,6 +74,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ineffective severity/confidence overrides emit a `CONFIG-001` diagnostic when
   the target rule is unknown or disabled. `config validate` prints the same
   warnings without failing.
+
+- Baselines now warn with `BASELINE-001` when they reference rule ids that are no
+  longer registered.
+- `scan --prune-baseline FILE` removes resolved entries with an auditable
+  `removed`/`kept` summary.
+- `--baseline` is repeatable and merges files by fingerprint deterministically.
+- Baselines can be written and read as TOML; reads auto-detect JSON or TOML and
+  JSON remains the default.
 
 ### Changed
 

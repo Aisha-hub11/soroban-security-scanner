@@ -638,6 +638,184 @@ fn baseline_from_clean_project_flags_all_findings_as_new() {
 }
 
 #[test]
+fn baseline_unknown_rule_ids_emit_diagnostics() {
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-blstale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline = dir.join("baseline.json");
+    std::fs::write(
+        &baseline,
+        r#"{
+  "version": 1,
+  "tool": "soroban-scan",
+  "tool_version": "0.1.0",
+  "findings": [
+    {
+      "fingerprint": "stale",
+      "rule_id": "SS-999",
+      "file": "src/lib.rs",
+      "severity": "low",
+      "title": "Old rule"
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    let messages: Vec<&str> = value["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|diagnostic| diagnostic["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("SS-999") && message.contains("unknown rule id")),
+        "got: {messages:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn baseline_prune_removes_resolved_entries() {
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-blprune-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline = dir.join("baseline.json");
+
+    let write = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--write-baseline",
+        baseline.to_str().unwrap(),
+        "--quiet",
+    ]);
+    assert_eq!(write.code, 0, "stderr: {}", write.stderr);
+
+    let text = std::fs::read_to_string(&baseline).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let before = value["findings"].as_array().unwrap().len();
+    value["findings"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "fingerprint": "stale",
+            "rule_id": "SS-001",
+            "file": "src/lib.rs",
+            "severity": "low",
+            "title": "Resolved"
+        }));
+    std::fs::write(&baseline, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let prune = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--prune-baseline",
+        baseline.to_str().unwrap(),
+    ]);
+    assert_eq!(prune.code, 0, "stderr: {}", prune.stderr);
+    assert!(prune.stderr.contains("1 removed"), "got: {}", prune.stderr);
+
+    let text = std::fs::read_to_string(&baseline).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let findings = value["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), before);
+    assert!(!findings.iter().any(|entry| entry["fingerprint"] == "stale"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn baseline_toml_round_trips_and_is_auto_detected() {
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-bltoml-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline = dir.join("baseline.toml");
+
+    let write = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--write-baseline",
+        baseline.to_str().unwrap(),
+        "--quiet",
+    ]);
+    assert_eq!(write.code, 0, "stderr: {}", write.stderr);
+    let text = std::fs::read_to_string(&baseline).unwrap();
+    assert!(
+        text.contains("format = \"soroban-scan-baseline\""),
+        "got: {text}"
+    );
+
+    let known = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--fail-on",
+        "high",
+        "--quiet",
+    ]);
+    assert_eq!(known.code, 0, "stderr: {}", known.stderr);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn baseline_accepts_multiple_files() {
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-blmerge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let first = dir.join("first.json");
+    let second = dir.join("second.toml");
+
+    let write_first = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--write-baseline",
+        first.to_str().unwrap(),
+        "--quiet",
+    ]);
+    assert_eq!(write_first.code, 0);
+    let write_second = run(&[
+        "scan",
+        fixture("projects/soroban-confirmed").to_str().unwrap(),
+        "--write-baseline",
+        second.to_str().unwrap(),
+        "--quiet",
+    ]);
+    assert_eq!(write_second.code, 0);
+
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--baseline",
+        first.to_str().unwrap(),
+        "--baseline",
+        second.to_str().unwrap(),
+        "--fail-on",
+        "high",
+        "--quiet",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn files_from_scans_only_listed_files() {
     let dir = std::env::temp_dir().join(format!("soroban-scan-cli-ff-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

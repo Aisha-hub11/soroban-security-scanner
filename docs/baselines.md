@@ -32,6 +32,54 @@ soroban-scan scan ./contracts \
   --format json
 ```
 
+## Merging baselines
+
+`--baseline` is repeatable, so per-package baselines can be composed for one
+scan:
+
+```bash
+soroban-scan scan ./contracts \
+  --baseline .baseline-api.json \
+  --baseline .baseline-worker.toml
+```
+
+Files are merged by fingerprint. Entries are sorted by fingerprint and severity,
+so duplicate fingerprints keep the same entry regardless of argument order.
+Identical fingerprints are de-duplicated.
+
+## Pruning a baseline
+
+When findings are fixed, remove their stale entries explicitly:
+
+```bash
+soroban-scan scan ./contracts --prune-baseline .soroban-scan-baseline.json
+```
+
+Pruning rewrites the file with only findings present in this scan and prints a
+summary (`N removed, M kept`) to stderr. It never runs as a side effect of a
+normal scan.
+
+## Stale rule ids
+
+Baseline entries that reference a rule id no longer in the registry produce a
+`BASELINE-001` warning diagnostic. The scan still succeeds, so older baselines
+remain forward compatible; the warning simply surfaces entries that no longer
+apply.
+
+## TOML baselines
+
+JSON is the default format. Write TOML with `--baseline-format toml` or by using a
+`.toml` output path:
+
+```bash
+soroban-scan scan ./contracts \
+  --write-baseline .soroban-scan-baseline.toml \
+  --baseline-format toml
+```
+
+Reads auto-detect the format, so the same `--baseline` flag accepts both JSON and
+TOML. TOML baselines include a `format = "soroban-scan-baseline"` marker.
+
 ## Incremental scanning
 
 When you scan only a subset of files (for example, changed files in a pull
@@ -105,6 +153,22 @@ fingerprint, which is intentional.
     }
   ]
 }
+```
+
+TOML uses the same fields plus a format marker:
+
+```toml
+format = "soroban-scan-baseline"
+version = 1
+tool = "soroban-scan"
+tool_version = "0.1.0"
+
+[[findings]]
+fingerprint = "..."
+rule_id = "SS-001"
+file = "src/lib.rs"
+severity = "high"
+title = "State-changing entry point without caller authorization"
 ```
 
 Entries are sorted by fingerprint for deterministic output. Baselines are
