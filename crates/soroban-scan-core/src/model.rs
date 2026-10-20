@@ -202,6 +202,9 @@ pub enum DiagnosticCode {
     /// A rule override has no effect because the target is unknown or disabled.
     #[serde(rename = "CONFIG-001")]
     IneffectiveOverride,
+    /// A baseline references a rule id that is not registered.
+    #[serde(rename = "BASELINE-001")]
+    BaselineUnknownRule,
 }
 
 impl DiagnosticCode {
@@ -216,6 +219,7 @@ impl DiagnosticCode {
             DiagnosticCode::RuleFileOutsideSet => "RULE-002",
             DiagnosticCode::RuleMissingEvidence => "RULE-003",
             DiagnosticCode::IneffectiveOverride => "CONFIG-001",
+            DiagnosticCode::BaselineUnknownRule => "BASELINE-001",
         }
     }
 }

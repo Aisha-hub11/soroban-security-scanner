@@ -130,6 +130,27 @@ impl FailOnArg {
     }
 }
 
+/// Argument value for `--baseline-format`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum BaselineFormatArg {
+    Json,
+    Toml,
+}
+
+impl BaselineFormatArg {
+    fn from_path(path: &Path) -> Self {
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
+        {
+            BaselineFormatArg::Toml
+        } else {
+            BaselineFormatArg::Json
+        }
+    }
+}
+
 /// Argument value for `--pager`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum PagerArg {
@@ -251,13 +272,21 @@ struct ScanArgs {
     #[arg(long, value_enum, default_value_t = FailOnArg::High)]
     fail_on: FailOnArg,
 
-    /// Compare against a baseline file, marking findings as new or existing.
-    #[arg(long, value_name = "FILE")]
-    baseline: Option<PathBuf>,
+    /// Compare against one or more baseline files, marking findings as new or existing.
+    #[arg(long, value_name = "FILE", action = clap::ArgAction::Append)]
+    baseline: Vec<PathBuf>,
 
     /// Write current findings to a baseline file and exit successfully.
     #[arg(long, value_name = "FILE")]
     write_baseline: Option<PathBuf>,
+
+    /// Rewrite a baseline with only findings present in this scan.
+    #[arg(long, value_name = "FILE", conflicts_with = "write_baseline")]
+    prune_baseline: Option<PathBuf>,
+
+    /// Baseline file format (JSON is the default; reads auto-detect).
+    #[arg(long, value_enum)]
+    baseline_format: Option<BaselineFormatArg>,
 
     /// With --baseline, report only findings that are new.
     #[arg(long, requires = "baseline")]
@@ -478,7 +507,10 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
 
     if let Some(path) = &args.write_baseline {
         let baseline = Baseline::from_findings(&outcome.findings);
-        let text = baseline.to_json().map_err(runtime)?;
+        let format = args
+            .baseline_format
+            .unwrap_or_else(|| BaselineFormatArg::from_path(path));
+        let text = serialize_baseline(&baseline, format)?;
         std::fs::write(path, text)
             .map_err(|e| CliError::Runtime(format!("cannot write {}: {e}", path.display())))?;
         if !args.quiet {
@@ -491,12 +523,42 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
         return Ok(EXIT_SUCCESS);
     }
 
-    let mut new_indices: Option<Vec<usize>> = None;
-    if let Some(path) = &args.baseline {
+    if let Some(path) = &args.prune_baseline {
         let text = std::fs::read_to_string(path).map_err(|e| {
             CliError::Runtime(format!("cannot read baseline {}: {e}", path.display()))
         })?;
-        let baseline = Baseline::from_json(&text).map_err(runtime)?;
+        let baseline = Baseline::from_text(&text).map_err(runtime)?;
+        let (pruned, removed) = baseline.prune(&outcome.findings);
+        let format = args
+            .baseline_format
+            .unwrap_or_else(|| BaselineFormatArg::from_path(path));
+        let text = serialize_baseline(&pruned, format)?;
+        std::fs::write(path, text)
+            .map_err(|e| CliError::Runtime(format!("cannot write {}: {e}", path.display())))?;
+        if !args.quiet {
+            eprintln!(
+                "pruned baseline: {} removed, {} kept in {}",
+                removed,
+                pruned.findings.len(),
+                path.display()
+            );
+        }
+        return Ok(EXIT_SUCCESS);
+    }
+
+    let mut new_indices: Option<Vec<usize>> = None;
+    if !args.baseline.is_empty() {
+        let mut baselines = Vec::with_capacity(args.baseline.len());
+        for path in &args.baseline {
+            let text = std::fs::read_to_string(path).map_err(|e| {
+                CliError::Runtime(format!("cannot read baseline {}: {e}", path.display()))
+            })?;
+            baselines.push(Baseline::from_text(&text).map_err(runtime)?);
+        }
+        let baseline = Baseline::merge(&baselines);
+        outcome
+            .diagnostics
+            .extend(baseline.unknown_rule_diagnostics(registry));
         let comparison = baseline::compare(&outcome.findings, &baseline);
         let resolved = if args.incremental {
             0
@@ -1154,6 +1216,13 @@ fn validate_rule_ids(config: &ScanConfig, registry: &RuleRegistry) -> CliResult<
         }
     }
     Ok(())
+}
+
+fn serialize_baseline(baseline: &Baseline, format: BaselineFormatArg) -> CliResult<String> {
+    match format {
+        BaselineFormatArg::Json => baseline.to_json().map_err(runtime),
+        BaselineFormatArg::Toml => baseline.to_toml().map_err(runtime),
+    }
 }
 
 fn runtime(error: soroban_scan_core::error::ScanError) -> CliError {

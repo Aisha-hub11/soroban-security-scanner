@@ -43,8 +43,10 @@ roots in one run.
 | `--disable <RULE>` | Disable a rule by id (repeatable). |
 | `--rule <RULE>` | Run only the given rule(s) (repeatable). |
 | `--fail-on <none\|info\|low\|medium\|high\|critical>` | Failure threshold (default `high`). |
-| `--baseline <FILE>` | Compare against a baseline; gate applies to new findings only. |
+| `--baseline <FILE>` | Compare against a baseline (repeatable; files are merged). Gate applies to new findings only. |
 | `--write-baseline <FILE>` | Write current findings as a baseline and exit. |
+| `--prune-baseline <FILE>` | Rewrite the baseline with only findings present in this scan and print a removal summary. |
+| `--baseline-format <json\|toml>` | Baseline output format (default inferred from the file extension, then JSON). Reads auto-detect. |
 | `--new-only` | With `--baseline`, report only new findings. |
 | `--incremental` | With `--baseline`, do not report resolved findings. |
 | `--guidance` | Print labeled offline guidance for findings (see [ai.md](ai.md)). |
