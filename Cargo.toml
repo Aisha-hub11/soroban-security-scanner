@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/soroban-scan-core",
     "crates/soroban-scan-cli",
+    "xtask",
 ]
 exclude = [
     "examples/*",
