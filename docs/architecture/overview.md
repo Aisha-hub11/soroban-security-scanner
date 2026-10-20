@@ -97,6 +97,7 @@ Lockfiles are committed for reproducible builds.
 
 ## Further reading
 
+- [Workspace layout and module dependency map](workspace-layout.md)
 - [ADRs](adr/)
 - [Security model](../security/security-model.md)
 - [Threat model](../security/threat-model.md)
