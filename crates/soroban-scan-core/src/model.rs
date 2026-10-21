@@ -229,6 +229,9 @@ pub enum DiagnosticCode {
     /// The optional assistance layer exhausted its request budget.
     #[serde(rename = "AI-001")]
     AiRequestBudgetExhausted,
+    /// Repeated provider failures disabled assistance for the rest of the scan.
+    #[serde(rename = "AI-002")]
+    AiCircuitOpen,
 }
 
 impl DiagnosticCode {
@@ -252,6 +255,7 @@ impl DiagnosticCode {
             DiagnosticCode::GeneratedFileMarked => "GENERATED-001",
             DiagnosticCode::GeneratedFileExcluded => "GENERATED-002",
             DiagnosticCode::AiRequestBudgetExhausted => "AI-001",
+            DiagnosticCode::AiCircuitOpen => "AI-002",
         }
     }
 }

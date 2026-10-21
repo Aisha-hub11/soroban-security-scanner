@@ -257,6 +257,107 @@ fn normalize_rel(path: &Path) -> String {
     s.strip_prefix("./").unwrap_or(&s).to_string()
 }
 
+/// Inclusive line range used for overlap checks.
+fn finding_span(finding: &Finding) -> (usize, usize) {
+    let start = finding.location.line;
+    let end = finding.location.end_line.unwrap_or(start).max(start);
+    (start, end)
+}
+
+/// Inclusive column range, or the whole line when the column is unknown.
+fn finding_column_span(finding: &Finding) -> (usize, usize) {
+    match finding.location.column {
+        None => (0, usize::MAX),
+        Some(start) => {
+            let end = finding.location.end_column.unwrap_or(start).max(start);
+            (start, end)
+        }
+    }
+}
+
+/// Whether two findings occupy overlapping inclusive line/column ranges.
+///
+/// Multi-line findings overlap by line range. Two single-line findings must
+/// also have overlapping column ranges, so distinct issues on the same line
+/// (for example two hardcoded addresses) are not merged.
+fn spans_overlap(left: &Finding, right: &Finding) -> bool {
+    let (left_start, left_end) = finding_span(left);
+    let (right_start, right_end) = finding_span(right);
+    if !(left_start <= right_end && right_start <= left_end) {
+        return false;
+    }
+    if left_start == left_end && right_start == right_end {
+        let (left_column_start, left_column_end) = finding_column_span(left);
+        let (right_column_start, right_column_end) = finding_column_span(right);
+        return left_column_start <= right_column_end && right_column_start <= left_column_end;
+    }
+    true
+}
+
+/// Whether `candidate` should replace `current` under the overlap policy.
+///
+/// The earliest start wins; at the same start the narrower span is more
+/// specific; then the smaller column; finally the lexicographically smaller
+/// fingerprint keeps the result deterministic.
+fn is_more_specific(candidate: &Finding, current: &Finding) -> bool {
+    let (candidate_start, candidate_end) = finding_span(candidate);
+    let (current_start, current_end) = finding_span(current);
+    if candidate_start != current_start {
+        return candidate_start < current_start;
+    }
+    let candidate_width = candidate_end - candidate_start;
+    let current_width = current_end - current_start;
+    if candidate_width != current_width {
+        return candidate_width < current_width;
+    }
+    let candidate_column = candidate.location.column.unwrap_or(0);
+    let current_column = current.location.column.unwrap_or(0);
+    if candidate_column != current_column {
+        return candidate_column < current_column;
+    }
+    candidate.fingerprint < current.fingerprint
+}
+
+/// Collapses overlapping findings from the same rule and file.
+///
+/// The documented policy is: findings with the same `rule_id` and normalized
+/// file whose inclusive line ranges overlap describe the same issue. Exactly
+/// one survives, preferring the earliest start, then the narrowest span, then
+/// the smallest column, then the smallest fingerprint. Adjacent ranges (for
+/// example `1..=2` and `3..=4`) do **not** overlap. Findings from different
+/// rules or files are never merged.
+fn deduplicate_overlapping(findings: &mut Vec<Finding>) {
+    let mut groups: BTreeMap<(String, String), Vec<Finding>> = BTreeMap::new();
+    for finding in findings.drain(..) {
+        let key = (
+            finding.rule_id.clone(),
+            normalize_rel(&finding.location.file),
+        );
+        groups.entry(key).or_default().push(finding);
+    }
+
+    let mut kept = Vec::new();
+    for (_, group) in groups {
+        let mut selected: Vec<Finding> = Vec::new();
+        for finding in group {
+            if let Some(index) = selected
+                .iter()
+                .position(|existing| spans_overlap(existing, &finding))
+            {
+                if is_more_specific(&finding, &selected[index]) {
+                    selected[index] = finding;
+                }
+            } else {
+                selected.push(finding);
+            }
+        }
+        kept.extend(selected);
+    }
+
+    kept.sort_by_key(Finding::sort_key);
+    *findings = kept;
+}
+
 /// Returns true if `path` is a safe, relative path with no traversal.
 fn is_safe_relative(path: &Path) -> bool {
     if path.is_absolute() {
@@ -562,10 +663,9 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
 
     stats.findings_rejected = rejected;
 
-    // Deterministic ordering, then exact de-duplication.
+    // Deterministic ordering, then overlap-aware de-duplication.
     findings.sort_by_key(Finding::sort_key);
-    let mut seen = BTreeSet::new();
-    findings.retain(|f| seen.insert(f.identity()));
+    deduplicate_overlapping(&mut findings);
 
     // Apply inline suppression directives. Suppressed findings leave the gate
     // but are always reported with the directive and reason that removed them.
@@ -1116,6 +1216,120 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(path, content).unwrap();
+    }
+
+    fn dedup_meta(rule_id: &'static str) -> RuleMetadata {
+        RuleMetadata::new(
+            rule_id,
+            "Test rule",
+            "test description",
+            Category::Authorization,
+            Severity::High,
+            Confidence::Medium,
+            "fix it",
+        )
+    }
+
+    fn dedup_finding(
+        rule_id: &'static str,
+        file: &str,
+        line: usize,
+        end_line: usize,
+        column: usize,
+        evidence: &str,
+    ) -> Finding {
+        let location = SourceLocation::with_column(file, line, column).with_end(end_line, None);
+        Finding::new(&dedup_meta(rule_id), location, evidence)
+    }
+
+    #[test]
+    fn dedup_collapses_overlapping_spans_for_the_same_rule_and_file() {
+        let mut findings = vec![
+            dedup_finding("SS-001", "src/lib.rs", 5, 9, 5, "first"),
+            dedup_finding("SS-001", "src/lib.rs", 7, 12, 9, "second"),
+        ];
+
+        deduplicate_overlapping(&mut findings);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].location.line, 5);
+        assert_eq!(findings[0].evidence, "first");
+    }
+
+    #[test]
+    fn dedup_prefers_the_narrower_span_at_the_same_start() {
+        let mut findings = vec![
+            dedup_finding("SS-001", "src/lib.rs", 5, 20, 5, "wide"),
+            dedup_finding("SS-001", "src/lib.rs", 5, 7, 5, "narrow"),
+        ];
+
+        deduplicate_overlapping(&mut findings);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].evidence, "narrow");
+    }
+
+    #[test]
+    fn dedup_keeps_adjacent_spans() {
+        let mut findings = vec![
+            dedup_finding("SS-001", "src/lib.rs", 1, 2, 1, "first"),
+            dedup_finding("SS-001", "src/lib.rs", 3, 4, 1, "second"),
+        ];
+
+        deduplicate_overlapping(&mut findings);
+
+        assert_eq!(findings.len(), 2);
+    }
+
+    #[test]
+    fn dedup_never_merges_different_rules_or_files() {
+        let mut findings = vec![
+            dedup_finding("SS-001", "src/lib.rs", 5, 9, 5, "rule one"),
+            dedup_finding("SS-002", "src/lib.rs", 5, 9, 5, "rule two"),
+            dedup_finding("SS-001", "src/other.rs", 5, 9, 5, "other file"),
+        ];
+
+        deduplicate_overlapping(&mut findings);
+
+        assert_eq!(findings.len(), 3);
+    }
+
+    #[test]
+    fn dedup_keeps_same_line_findings_at_distinct_columns() {
+        let mut findings = vec![
+            dedup_finding("SS-007", "src/lib.rs", 5, 5, 5, "first address"),
+            dedup_finding("SS-007", "src/lib.rs", 5, 5, 20, "second address"),
+        ];
+
+        deduplicate_overlapping(&mut findings);
+
+        assert_eq!(findings.len(), 2);
+    }
+
+    #[test]
+    fn dedup_collapses_same_line_findings_with_overlapping_columns() {
+        let mut left = dedup_finding("SS-007", "src/lib.rs", 5, 5, 5, "first");
+        left.location.end_column = Some(12);
+        let mut right = dedup_finding("SS-007", "src/lib.rs", 5, 5, 8, "second");
+        right.location.end_column = Some(15);
+        let mut findings = vec![left, right];
+
+        deduplicate_overlapping(&mut findings);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].location.column, Some(5));
+    }
+
+    #[test]
+    fn dedup_collapses_exact_duplicates() {
+        let mut findings = vec![
+            dedup_finding("SS-001", "src/lib.rs", 5, 5, 5, "same"),
+            dedup_finding("SS-001", "src/lib.rs", 5, 5, 5, "same"),
+        ];
+
+        deduplicate_overlapping(&mut findings);
+
+        assert_eq!(findings.len(), 1);
     }
 
     fn project_fixture(name: &str) -> PathBuf {

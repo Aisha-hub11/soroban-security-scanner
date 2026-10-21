@@ -5,6 +5,7 @@
 //! A file that fails to parse is recorded as a diagnostic rather than aborting
 //! the scan.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use quote::ToTokens;
@@ -1427,7 +1428,27 @@ pub fn detect_generated_markers(source: &str) -> Vec<GeneratedMarker> {
     markers
 }
 
+/// Normalizes a source document for parsing only.
+///
+/// A leading UTF-8 BOM is removed and CRLF/CR line endings become LF so line
+/// and column spans match the visible source. The file on disk is never
+/// modified; the returned value is borrowed when no normalization is needed.
+fn normalize_source_text(content: &str) -> Cow<'_, str> {
+    let without_bom = content.strip_prefix('\u{feff}').unwrap_or(content);
+    if without_bom.contains('\r') {
+        return Cow::Owned(without_bom.replace("\r\n", "\n").replace('\r', "\n"));
+    }
+    if without_bom.len() == content.len() {
+        Cow::Borrowed(content)
+    } else {
+        Cow::Borrowed(without_bom)
+    }
+}
+
 /// Parses a single source file's content.
+///
+/// The content is normalized in memory (BOM stripped, CRLF/CR to LF) before
+/// parsing so spans are accurate; the source file is never written back.
 pub fn parse_source(path: &Path, crate_root: &Path, content: &str) -> ParsedSource {
     parse_source_with_options(path, crate_root, content, false)
 }
@@ -1442,6 +1463,8 @@ pub fn parse_source_with_options(
     content: &str,
     exclude_tests: bool,
 ) -> ParsedSource {
+    let normalized = normalize_source_text(content);
+    let content = normalized.as_ref();
     let module_path = module_path_for(path, crate_root);
     let generated_markers = detect_generated_markers(content);
 
@@ -1973,6 +1996,35 @@ mod tests {
         assert_eq!(s.functions[0].line, 1);
         assert_eq!(s.functions[1].name, "b");
         assert_eq!(s.functions[1].line, 3);
+    }
+
+    #[test]
+    fn strips_bom_and_normalizes_crlf_without_shifting_lines() {
+        let s = parse("\u{feff}fn a() {}\r\n\r\nfn b() {}\r\n");
+        assert!(s.is_parsed(), "parse error: {:?}", s.parse_error);
+        assert_eq!(s.functions.len(), 2);
+        assert_eq!(s.functions[0].name, "a");
+        assert_eq!((s.functions[0].line, s.functions[0].column), (1, 1));
+        assert_eq!(s.functions[1].name, "b");
+        assert_eq!((s.functions[1].line, s.functions[1].column), (3, 1));
+    }
+
+    #[test]
+    fn normalizes_lone_carriage_returns_for_spans() {
+        let s = parse("fn a() {}\rfn b() {}\r");
+        assert!(s.is_parsed(), "parse error: {:?}", s.parse_error);
+        assert_eq!(s.functions.len(), 2);
+        assert_eq!(s.functions[1].line, 2);
+        assert_eq!(s.functions[1].column, 1);
+    }
+
+    #[test]
+    fn bom_and_crlf_do_not_change_reported_end_lines() {
+        let lf = parse("fn a() {\n    let x = 1;\n}\n");
+        let crlf = parse("\u{feff}fn a() {\r\n    let x = 1;\r\n}\r\n");
+        assert_eq!(lf.functions[0].end_line, crlf.functions[0].end_line);
+        assert_eq!(lf.functions[0].line, crlf.functions[0].line);
+        assert_eq!(lf.functions[0].column, crlf.functions[0].column);
     }
 
     #[test]

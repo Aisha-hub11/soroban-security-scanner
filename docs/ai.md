@@ -99,6 +99,7 @@ max_requests = 50   # hard per-scan budget; 0 disables calls
 max_retries = 2     # bounded retries per request
 backoff_ms = 250    # base exponential backoff
 max_backoff_ms = 4000
+failure_threshold = 3  # consecutive failures before assistance is disabled
 ```
 
 `GuidanceSession` consumes one slot for the summary and one per finding. When
@@ -107,6 +108,11 @@ diagnostic to stderr, and the scan completes normally (the deterministic report
 and exit code are unchanged). Retries are capped by `max_retries` with
 exponential backoff capped at `max_backoff_ms`; assistance never retries
 indefinitely.
+
+After `failure_threshold` consecutive provider failures the circuit breaker
+opens for the remainder of the run: no further provider calls are made, an
+`AI-002` diagnostic is printed, and the scan completes with the deterministic
+result. A successful call resets the failure count.
 
 ## Implementing a provider
 

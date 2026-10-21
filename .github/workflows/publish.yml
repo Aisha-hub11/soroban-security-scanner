@@ -56,6 +56,10 @@ jobs:
           print(f"publishing {version}")
           PY
 
+      - name: Verify changelog has a section for this tag
+        run: |
+          python3 tools/release_notes.py --tag "$GITHUB_REF_NAME" --output release-notes.md
+
       - name: Verify core package (cargo publish --dry-run)
         run: cargo publish --dry-run -p soroban-scan-core --locked
 
@@ -96,3 +100,31 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p soroban-scan-cli --locked
+
+  release:
+    name: Publish GitHub release notes
+    needs: [verify, publish]
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract the changelog section for this tag
+        run: |
+          python3 tools/release_notes.py --tag "$GITHUB_REF_NAME" --output release-notes.md
+          cat release-notes.md
+
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md \
+              --verify-tag
+          fi

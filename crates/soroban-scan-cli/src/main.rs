@@ -764,6 +764,14 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
                 session.requests_used()
             );
         }
+        if session.circuit_open() {
+            eprintln!(
+                "diagnostic: [{}] assistance disabled after {} consecutive provider failure(s); \
+                 continuing without further AI calls",
+                DiagnosticCode::AiCircuitOpen,
+                session.consecutive_failures()
+            );
+        }
     }
 
     Ok(if failed { EXIT_FINDINGS } else { EXIT_SUCCESS })
