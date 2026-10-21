@@ -87,6 +87,17 @@ pub struct Dependency {
     pub kind: DepKind,
     /// Whether the dependency is optional.
     pub optional: bool,
+    /// Enabled crate features.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Whether default features are enabled.
+    #[serde(default = "default_true")]
+    pub default_features: bool,
+}
+
+/// Serde default for fields that are enabled unless explicitly disabled.
+fn default_true() -> bool {
+    true
 }
 
 /// `[package]` metadata.
@@ -190,6 +201,9 @@ pub enum DiagnosticCode {
     /// A source file could not be read.
     #[serde(rename = "SOURCE-002")]
     SourceUnreadable,
+    /// A `#[path]` module declaration was rejected because it escapes the crate root.
+    #[serde(rename = "SOURCE-003")]
+    SourceModulePathRejected,
     /// A source file's crate root could not be determined unambiguously.
     #[serde(rename = "CRATE-001")]
     AmbiguousCrateRoot,
@@ -242,6 +256,7 @@ impl DiagnosticCode {
             DiagnosticCode::ManifestUnreadable => "MANIFEST-001",
             DiagnosticCode::SourceTooLarge => "SOURCE-001",
             DiagnosticCode::SourceUnreadable => "SOURCE-002",
+            DiagnosticCode::SourceModulePathRejected => "SOURCE-003",
             DiagnosticCode::AmbiguousCrateRoot => "CRATE-001",
             DiagnosticCode::RuleUnsafeLocation => "RULE-001",
             DiagnosticCode::RuleFileOutsideSet => "RULE-002",
@@ -391,6 +406,8 @@ mod tests {
                 source: DepSource::Registry { registry: None },
                 kind: DepKind::Normal,
                 optional: false,
+                features: Vec::new(),
+                default_features: true,
             }],
         };
         assert!(m.dependency("soroban-sdk").is_some());

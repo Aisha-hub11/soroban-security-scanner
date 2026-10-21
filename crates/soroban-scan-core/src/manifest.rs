@@ -126,10 +126,27 @@ fn parse_dependency(name: &str, spec: &Value, kind: DepKind) -> Dependency {
             source: DepSource::Registry { registry: None },
             kind,
             optional: false,
+            features: Vec::new(),
+            default_features: true,
         },
         Value::Table(t) => {
             let version = t.get("version").and_then(Value::as_str).map(str::to_string);
             let optional = t.get("optional").and_then(Value::as_bool).unwrap_or(false);
+            let features = t
+                .get("features")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let default_features = t
+                .get("default-features")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             let source = if t.get("workspace").and_then(Value::as_bool) == Some(true) {
                 DepSource::Workspace
             } else if let Some(path) = t.get("path").and_then(Value::as_str) {
@@ -153,6 +170,8 @@ fn parse_dependency(name: &str, spec: &Value, kind: DepKind) -> Dependency {
                 source,
                 kind,
                 optional,
+                features,
+                default_features,
             }
         }
         _ => Dependency {
@@ -161,7 +180,70 @@ fn parse_dependency(name: &str, spec: &Value, kind: DepKind) -> Dependency {
             source: DepSource::Unknown,
             kind,
             optional: false,
+            features: Vec::new(),
+            default_features: true,
         },
+    }
+}
+
+/// Resolves `{ workspace = true }` dependencies for workspace members.
+///
+/// The nearest ancestor manifest that declares `[workspace]` supplies the
+/// version, features, and default-feature setting. The member's `source`
+/// remains [`DepSource::Workspace`], preserving the declared-vs-inherited
+/// distinction while making `version` available to SS-015 and SDK reporting.
+/// Member-declared features are merged with the workspace features.
+pub fn resolve_workspace_dependencies(manifests: &mut [Manifest]) {
+    use std::collections::BTreeMap;
+
+    let roots: Vec<(PathBuf, BTreeMap<String, Dependency>)> = manifests
+        .iter()
+        .filter(|manifest| manifest.is_workspace_root())
+        .filter_map(|manifest| {
+            let dir = manifest.path.parent()?.to_path_buf();
+            let deps = manifest
+                .dependencies
+                .iter()
+                .map(|dep| (dep.name.clone(), dep.clone()))
+                .collect();
+            Some((dir, deps))
+        })
+        .collect();
+
+    if roots.is_empty() {
+        return;
+    }
+
+    for manifest in manifests.iter_mut() {
+        if manifest.is_workspace_root() {
+            continue;
+        }
+        let Some(dir) = manifest.path.parent() else {
+            continue;
+        };
+        let nearest = roots
+            .iter()
+            .filter(|(root, _)| dir != root && dir.starts_with(root))
+            .max_by_key(|(root, _)| root.components().count());
+        let Some((_, workspace_deps)) = nearest else {
+            continue;
+        };
+
+        for dependency in &mut manifest.dependencies {
+            if dependency.source != DepSource::Workspace {
+                continue;
+            }
+            let Some(inherited) = workspace_deps.get(&dependency.name) else {
+                continue;
+            };
+            dependency.version = inherited.version.clone();
+            let mut features = inherited.features.clone();
+            features.extend(dependency.features.iter().cloned());
+            features.sort();
+            features.dedup();
+            dependency.features = features;
+            dependency.default_features = inherited.default_features && dependency.default_features;
+        }
     }
 }
 
@@ -200,6 +282,65 @@ pretty_assertions = "1"
             m.dependency("pretty_assertions").unwrap().kind,
             DepKind::Dev
         );
+    }
+
+    #[test]
+    fn resolves_inherited_workspace_versions_and_features() {
+        let root_text = r#"
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+soroban-sdk = { version = "21.7.7", default-features = false, features = ["alloc"] }
+"#;
+        let member_text = r#"
+[package]
+name = "member"
+version = "0.1.0"
+
+[dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+serde = "1"
+"#;
+        let mut manifests = vec![
+            parse_manifest(Path::new("/ws/Cargo.toml"), root_text).unwrap(),
+            parse_manifest(Path::new("/ws/crates/member/Cargo.toml"), member_text).unwrap(),
+        ];
+
+        resolve_workspace_dependencies(&mut manifests);
+
+        let inherited = manifests[1].dependency("soroban-sdk").unwrap();
+        assert_eq!(inherited.version.as_deref(), Some("21.7.7"));
+        assert_eq!(inherited.source, DepSource::Workspace);
+        assert_eq!(inherited.features, vec!["alloc", "testutils"]);
+        assert!(!inherited.default_features);
+
+        let declared = manifests[1].dependency("serde").unwrap();
+        assert_eq!(declared.version.as_deref(), Some("1"));
+        assert_eq!(declared.source, DepSource::Registry { registry: None });
+    }
+
+    #[test]
+    fn inherited_dependency_without_workspace_entry_stays_unresolved() {
+        let root_text = "[workspace]\nmembers = [\"crates/*\"]\n";
+        let member_text = r#"
+[package]
+name = "member"
+version = "0.1.0"
+
+[dependencies]
+soroban-sdk = { workspace = true }
+"#;
+        let mut manifests = vec![
+            parse_manifest(Path::new("/ws/Cargo.toml"), root_text).unwrap(),
+            parse_manifest(Path::new("/ws/crates/member/Cargo.toml"), member_text).unwrap(),
+        ];
+
+        resolve_workspace_dependencies(&mut manifests);
+
+        let inherited = manifests[1].dependency("soroban-sdk").unwrap();
+        assert_eq!(inherited.version, None);
+        assert_eq!(inherited.source, DepSource::Workspace);
     }
 
     #[test]
