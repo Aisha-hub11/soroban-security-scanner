@@ -35,6 +35,11 @@ findings (rule and category counts) sort by descending count and then by name or
 id. Baselines are emitted sorted by fingerprint. Discovery sorts manifests and
 source files, and rule metadata is emitted in a stable order.
 
+Rules execute in ascending **rule id** order, independent of registration order
+(issue #106). Diagnostics, per-rule timings, and future early-exit decisions
+therefore match across registries containing the same rules in a different
+order. The final finding sort remains the last line of defence.
+
 ### 2. Fingerprint stability
 
 A fingerprint is the first 16 bytes of SHA-256 over:

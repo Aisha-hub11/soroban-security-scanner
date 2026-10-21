@@ -1954,3 +1954,91 @@ fn scan_github_format_emits_one_annotation_per_finding() {
         assert!(line.contains("title="), "{line}");
     }
 }
+
+#[test]
+fn structured_logging_writes_to_stderr_and_leaves_stdout_clean() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "json",
+        "--no-config",
+        "--log-level",
+        "info",
+    ]);
+
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&out.stdout).is_ok(),
+        "stdout was not valid JSON: {}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("\"event\":\"scan.start\""),
+        "stderr: {}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("\"event\":\"scan.complete\""),
+        "stderr: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("require_auth"),
+        "stderr: {}",
+        out.stderr
+    );
+}
+
+#[test]
+fn structured_logging_is_off_by_default() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "json",
+        "--no-config",
+    ]);
+
+    assert!(
+        !out.stderr.contains("\"event\":\"scan.start\""),
+        "stderr: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("\"event\":\"scan.complete\""),
+        "stderr: {}",
+        out.stderr
+    );
+}
+
+#[test]
+fn json_report_matches_the_published_schema() {
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "json",
+        "--no-config",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+
+    let report: serde_json::Value =
+        serde_json::from_str(&out.stdout).expect("report must be valid JSON");
+    let schema_text =
+        std::fs::read_to_string(repo_root().join("docs/integration/report.schema.json"))
+            .expect("published schema must exist");
+    let schema: serde_json::Value =
+        serde_json::from_str(&schema_text).expect("schema must be valid JSON");
+
+    let validator = jsonschema::validator_for(&schema).expect("schema must compile");
+    let errors: Vec<String> = validator
+        .iter_errors(&report)
+        .map(|error| error.to_string())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "report does not match schema: {errors:#?}"
+    );
+}

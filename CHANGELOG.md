@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Rule panics are isolated per invocation (`RULE-004`), other rules continue,
+  and a regression test now proves findings from healthy rules survive (`#103`).
+- Rules now execute in ascending rule-id order, so diagnostics and per-rule
+  timings are identical across registries with different registration order
+  (`#106`).
 - Baseline parsing now fails closed on empty, truncated, or corrupted JSON/TOML,
   with the file path and parser position in the error. A truncated baseline
   exits `3` instead of being treated as empty.
@@ -24,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--log-level` emits structured JSON log lines to stderr (disabled by default);
+  stdout remains report-only, and logs never include source, secrets or home
+  paths (`#92`).
+- A CLI test validates a real JSON report against the published
+  `docs/integration/report.schema.json` (`#62`).
 - Module paths follow external `mod` declarations (`foo.rs` and `foo/mod.rs`)
   and `#[path = "..."]`; targets escaping the crate root are rejected with
   `SOURCE-003` (`#44`).

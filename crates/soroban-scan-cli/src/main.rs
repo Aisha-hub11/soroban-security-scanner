@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
@@ -96,6 +97,53 @@ enabled = false
 # backoff_ms = 250
 # max_backoff_ms = 4000
 "#;
+
+/// Argument value for `--log-level`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum LogLevelArg {
+    /// Disable structured logging (default).
+    Off,
+    /// Only errors.
+    Error,
+    /// Warnings and errors.
+    Warn,
+    /// Informational events, warnings, and errors.
+    Info,
+    /// Debug events and everything above.
+    Debug,
+}
+
+impl LogLevelArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            LogLevelArg::Off => "off",
+            LogLevelArg::Error => "error",
+            LogLevelArg::Warn => "warn",
+            LogLevelArg::Info => "info",
+            LogLevelArg::Debug => "debug",
+        }
+    }
+}
+
+/// Emits one structured JSON log line to stderr when the level is enabled.
+///
+/// Callers must only pass non-sensitive scalar fields (counts, rule ids,
+/// formats). Scanned source, environment values, absolute home paths, and
+/// secrets must never be logged.
+fn log_event(configured: LogLevelArg, level: LogLevelArg, event: &str, fields: serde_json::Value) {
+    if configured == LogLevelArg::Off || level > configured {
+        return;
+    }
+    let mut object = serde_json::Map::new();
+    object.insert("level".to_string(), serde_json::json!(level.as_str()));
+    object.insert("event".to_string(), serde_json::json!(event));
+    if let serde_json::Value::Object(extra) = fields {
+        for (key, value) in extra {
+            object.insert(key, value);
+        }
+    }
+    eprintln!("{}", serde_json::Value::Object(object));
+}
 
 /// Argument value for `--format`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -346,6 +394,11 @@ struct ScanArgs {
     #[arg(long)]
     timings: bool,
 
+    /// Emit structured JSON log lines to stderr. Disabled by default; stdout is
+    /// reserved for the report. Logs never include source text or secrets.
+    #[arg(long, value_enum, default_value_t = LogLevelArg::Off)]
+    log_level: LogLevelArg,
+
     /// Page long terminal reports through `$PAGER` (never affects JSON, SARIF,
     /// Markdown, or GitHub annotations).
     #[arg(long, value_enum, default_value_t = PagerArg::Auto)]
@@ -545,6 +598,19 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
     }
 
     validate_rule_ids(&config, registry)?;
+
+    let scan_started = Instant::now();
+    log_event(
+        args.log_level,
+        LogLevelArg::Info,
+        "scan.start",
+        serde_json::json!({
+            "roots": args.paths.len(),
+            "stdin": stdin_mode,
+            "format": format!("{:?}", args.format).to_lowercase(),
+            "rules_enabled": config.rules.enabled.len(),
+        }),
+    );
 
     let mut outcome = if let Some(name) = &args.stdin_filename {
         let file_name = validate_logical_filename(name)?;
@@ -773,6 +839,20 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
             );
         }
     }
+
+    log_event(
+        args.log_level,
+        LogLevelArg::Info,
+        "scan.complete",
+        serde_json::json!({
+            "files_analyzed": outcome.stats.files_analyzed,
+            "files_failed": outcome.stats.files_failed,
+            "findings": outcome.findings.len(),
+            "diagnostics": outcome.diagnostics.len(),
+            "rules_run": outcome.stats.rules_run,
+            "duration_ms": scan_started.elapsed().as_millis() as u64,
+        }),
+    );
 
     Ok(if failed { EXIT_FINDINGS } else { EXIT_SUCCESS })
 }
