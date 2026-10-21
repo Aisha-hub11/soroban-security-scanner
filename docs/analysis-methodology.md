@@ -138,6 +138,25 @@ fixtures are under
 useful because the pattern is cheap to check and the consequences of expired
 persistent data can be severe.
 
+## Finding de-duplication
+
+After rules run, findings are sorted deterministically and then collapsed with
+an overlap rule:
+
+- Two findings are duplicates when they share the **same rule id and normalized
+  file** and their inclusive line ranges overlap (for example `5..=9` and
+  `7..=12`). Two single-line findings must also have overlapping column ranges,
+  so distinct issues on the same line (such as two hardcoded addresses) are
+  kept. Findings from different rules or files are never merged.
+- Exactly one finding survives: the earliest start line wins, then the narrower
+  span, then the smaller column, then the lexicographically smaller fingerprint.
+  This keeps the earliest, most specific report entry.
+- Adjacent ranges do not overlap (`1..=2` and `3..=4` both remain), and exact
+  duplicates collapse to one entry.
+- The rule is implemented by `deduplicate_overlapping` in
+  `crates/soroban-scan-core/src/engine.rs`; unit tests cover overlapping,
+  adjacent, cross-rule, cross-file, and exact-duplicate cases.
+
 ## Suppressions, baselines, and configuration
 
 The scanner provides explicit mechanisms for reviewed exceptions:
