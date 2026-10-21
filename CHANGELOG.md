@@ -18,9 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Findings from the same rule and file whose inclusive line ranges overlap are
   now collapsed to the earliest, most specific finding. Adjacent spans and
   findings from different rules/files are kept (`#107`).
+- Workspace members using `{ workspace = true }` now inherit the workspace
+  dependency version, merged features, and default-feature setting while keeping
+  `source = workspace` to record the inheritance (`#43`).
 
 ### Added
 
+- Module paths follow external `mod` declarations (`foo.rs` and `foo/mod.rs`)
+  and `#[path = "..."]`; targets escaping the crate root are rejected with
+  `SOURCE-003` (`#44`).
+- A weekly `cargo-mutants` workflow tracks assertion strength for the engine and
+  fingerprint modules, with an initial baseline in
+  `docs/development/mutation-testing.md` (`#68`).
+- Release artifacts now include a CycloneDX SBOM and a Linux binary with GitHub
+  build provenance attestation (`#56`).
 - A circuit breaker for the optional assistance layer: after
   `ai.failure_threshold` consecutive provider failures (default `3`),
   assistance is disabled for the remainder of the run and `AI-002` is printed.
