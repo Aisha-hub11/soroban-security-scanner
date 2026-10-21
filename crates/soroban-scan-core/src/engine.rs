@@ -61,6 +61,8 @@ pub struct ScanStats {
     pub generated_files_marked: usize,
     /// Source files excluded because they are generated.
     pub generated_files_excluded: usize,
+    /// Gate findings grouped by stable category name, sorted deterministically.
+    pub findings_by_category: BTreeMap<String, usize>,
 }
 
 /// Outcome of one rule execution for the opt-in timing breakdown.
@@ -773,6 +775,17 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
         .filter(|suppression| suppression.applied)
         .count();
 
+    // Category counts describe the same findings the gate and severity totals
+    // see. A BTreeMap keeps the JSON key order stable across runs.
+    stats.findings_by_category = findings
+        .iter()
+        .fold(BTreeMap::new(), |mut counts, finding| {
+            *counts
+                .entry(finding.category.as_str().to_string())
+                .or_insert(0) += 1;
+            counts
+        });
+
     ScanOutcome {
         project: loaded.project.clone(),
         findings,
@@ -992,6 +1005,12 @@ fn merge_stats(stats: &mut ScanStats, other: &ScanStats) {
     stats.config_suppressions_applied += other.config_suppressions_applied;
     stats.generated_files_marked += other.generated_files_marked;
     stats.generated_files_excluded += other.generated_files_excluded;
+    for (category, count) in &other.findings_by_category {
+        *stats
+            .findings_by_category
+            .entry(category.clone())
+            .or_insert(0) += count;
+    }
 }
 
 /// Ranks project classifications so the strongest one can be selected.
