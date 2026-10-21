@@ -138,6 +138,21 @@ fixtures are under
 useful because the pattern is cheap to check and the consequences of expired
 persistent data can be severe.
 
+## Manifest inheritance and module paths
+
+Workspace members often use `soroban-sdk = { workspace = true }`. The scanner
+reads `[workspace.dependencies]` from the nearest ancestor workspace root and
+fills in the inherited version, merged features, and default-feature setting
+while keeping `source = workspace` to record that the value was inherited
+rather than declared on the member. This makes inherited SDK versions visible to
+SS-015 and `soroban.sdk_versions`.
+
+Module paths follow external `mod name;` declarations from each crate root:
+`foo.rs` and `foo/mod.rs` are resolved per the Rust reference, and
+`#[path = "..."]` is honored. A `#[path]` target that escapes the crate root is
+rejected with `SOURCE-003`; the file keeps its best-effort file-based path.
+Unreachable files also keep the file-based fallback.
+
 ## Finding de-duplication
 
 After rules run, findings are sorted deterministically and then collapsed with
