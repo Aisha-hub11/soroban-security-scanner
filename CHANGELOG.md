@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every GitHub Actions reference is pinned to an immutable commit SHA with a
+  version comment, and Dependabot updates the pins weekly (`#54`).
 - `--log-level` emits structured JSON log lines to stderr (disabled by default);
   stdout remains report-only, and logs never include source, secrets or home
   paths (`#92`).

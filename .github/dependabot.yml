@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keep the SHA-pinned workflow actions current without losing the version
+  # comment that documents each pin (#54).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
