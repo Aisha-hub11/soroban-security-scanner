@@ -13,6 +13,12 @@ cargo run --release -p soroban-scan-core --example benchmark
 The benchmark generates synthetic `#[contractimpl]` sources with 100, 1,000,
 5,000, and 10,000 entry points, and reports throughput.
 
+It also reports the process's **peak resident memory** for each size. On Linux
+(the CI platform) this is read from `/proc/self/status` (`VmHWM`); platforms
+without an equivalent zero-dependency probe print `n/a` rather than guessing.
+Watch this column for changes that trade throughput for memory, which matters for
+CI container limits.
+
 ## Methodology
 
 - The source is generated in memory, so the numbers isolate parsing and detector
