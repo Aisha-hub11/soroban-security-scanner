@@ -543,7 +543,14 @@ pub fn scan(loaded: &LoadedProject, registry: &RuleRegistry, config: &ScanConfig
     let budget = config.rules.rule_time_budget_ms.map(Duration::from_millis);
     let mut rule_timings: Vec<RuleTiming> = Vec::new();
 
-    for rule in registry.rules() {
+    // Execution order is explicitly by rule id, independent of registration
+    // order. This keeps diagnostics, timings, and any future early-exit
+    // behavior deterministic even before findings are sorted (#106).
+    let mut rules: Vec<&dyn crate::rule::Rule> =
+        registry.rules().iter().map(|rule| rule.as_ref()).collect();
+    rules.sort_by_key(|rule| rule.metadata().id);
+
+    for rule in rules {
         let meta = rule.metadata();
         if !rule.enabled_by_default() || !config.rules.is_rule_enabled(meta.id, meta.category) {
             stats.rules_skipped += 1;
@@ -1796,9 +1803,13 @@ mod tests {
 
     impl PanickingRule {
         fn new() -> Self {
+            Self::with_id("SS-902")
+        }
+
+        fn with_id(id: &'static str) -> Self {
             PanickingRule {
                 meta: RuleMetadata::new(
-                    "SS-902",
+                    id,
                     "Panicking rule",
                     "panicking test rule",
                     Category::Authorization,
@@ -1860,6 +1871,51 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.code == DiagnosticCode::RulePanicked));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rule_execution_order_is_independent_of_registration_order() {
+        let (root, loaded) = project_with_source("rule-order", "fn a() {}\n");
+
+        let mut forward = RuleRegistry::new();
+        forward
+            .register(Box::new(PanickingRule::with_id("SS-902")))
+            .unwrap();
+        forward
+            .register(Box::new(PanickingRule::with_id("SS-903")))
+            .unwrap();
+
+        let mut reversed = RuleRegistry::new();
+        reversed
+            .register(Box::new(PanickingRule::with_id("SS-903")))
+            .unwrap();
+        reversed
+            .register(Box::new(PanickingRule::with_id("SS-902")))
+            .unwrap();
+
+        let forward_outcome = scan(&loaded, &forward, &ScanConfig::default());
+        let reversed_outcome = scan(&loaded, &reversed, &ScanConfig::default());
+
+        let forward_timings: Vec<_> = forward_outcome
+            .rule_timings
+            .iter()
+            .map(|timing| (timing.rule_id.as_str(), timing.status))
+            .collect();
+        let reversed_timings: Vec<_> = reversed_outcome
+            .rule_timings
+            .iter()
+            .map(|timing| (timing.rule_id.as_str(), timing.status))
+            .collect();
+        assert_eq!(forward_timings, reversed_timings);
+        assert_eq!(
+            forward_timings,
+            vec![
+                ("SS-902", RuleTimingStatus::Panicked),
+                ("SS-903", RuleTimingStatus::Panicked)
+            ]
+        );
+        assert_eq!(forward_outcome.diagnostics, reversed_outcome.diagnostics);
         let _ = std::fs::remove_dir_all(&root);
     }
 
