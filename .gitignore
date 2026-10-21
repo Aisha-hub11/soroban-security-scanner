@@ -47,3 +47,9 @@ venv/
 
 # Temporary
 /tmp/
+
+# cargo-fuzz
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
