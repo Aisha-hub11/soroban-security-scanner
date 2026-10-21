@@ -27,10 +27,14 @@ The `semver` CI job runs
 `soroban-scan-core` on every pull request. It compares the branch against the
 latest `v*` tag and skips cleanly when no tag exists yet.
 
-While the workspace version is `0.x`, the job passes `release-type: minor` so
-pre-1.0 minor releases may contain breaking changes. Revisit that setting when
-1.0 ships. The stable surface is documented in
-[`docs/api-stability.md`](../api-stability.md).
+While the workspace version is `0.x`, the job passes `release-type: minor`.
+That relaxes the lints a minor release satisfies, but it does **not** relax
+lints that require a major version: `cargo-semver-checks` still exits `100`
+and reports `Summary semver requires new major version` for those, and the
+`Semver (core)` job still fails. A breaking change to the public API of
+`soroban-scan-core` therefore needs a deliberate version bump even while the
+crate is pre-1.0. Revisit the setting when 1.0 ships. The stable surface is
+documented in [`docs/api-stability.md`](../api-stability.md).
 
 ## Release checklist
 

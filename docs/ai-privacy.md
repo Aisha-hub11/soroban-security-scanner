@@ -75,7 +75,7 @@ The provider receives one `Finding` and, when the rule is known, that rule's
 | `evidence` | `String` | The source snippet the rule matched. **The only source text in the contract.** |
 | `remediation` | `String` | The rule's documented fix guidance. |
 | `references` | `Vec<String>` | Public rule references. |
-| `fingerprint` | `String` | SHA-256 digest used for baselines and cache keys. |
+| `fingerprint` | `String` | Truncated SHA-256 digest (128-bit, 32 hex characters) over rule id, file path, and evidence. Used for baselines and as cache-key input. |
 
 `location` is a `SourceLocation`:
 
