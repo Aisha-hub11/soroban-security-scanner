@@ -6,6 +6,7 @@
 //! the scan.
 
 use std::borrow::Cow;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use quote::ToTokens;
@@ -1788,6 +1789,188 @@ fn associate_crate_root(
     }
 }
 
+/// One external `mod name;` declaration found in a parsed file.
+struct ModuleDeclaration {
+    name: String,
+    prefix: String,
+    path_attr: Option<String>,
+}
+
+/// Resolves file module paths by following `mod` declarations from crate roots.
+///
+/// Standard `foo.rs`/`foo/mod.rs` resolution and `#[path = "..."]` are honored.
+/// A `#[path]` target that escapes the crate root is rejected and reported as
+/// `SOURCE-003`; the file keeps its best-effort file-based module path.
+fn resolve_module_paths(
+    sources: &mut [ParsedSource],
+    manifests: &[crate::model::Manifest],
+    root: &Path,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let candidates = crate_root_candidates(manifests);
+    let index: BTreeMap<PathBuf, usize> = sources
+        .iter()
+        .enumerate()
+        .map(|(idx, source)| (path_key(&source.path), idx))
+        .collect();
+
+    let mut visited = vec![false; sources.len()];
+    let mut queue = VecDeque::new();
+    for (idx, source) in sources.iter_mut().enumerate() {
+        let (crate_root, _) = associate_crate_root(&source.path, &candidates, root);
+        if is_crate_root_file(&source.path, &crate_root) {
+            source.module_path = "crate".to_string();
+            visited[idx] = true;
+            queue.push_back(idx);
+        }
+    }
+
+    while let Some(idx) = queue.pop_front() {
+        let (crate_root, _) = associate_crate_root(&sources[idx].path, &candidates, root);
+        let declarations = sources[idx]
+            .syntax
+            .as_ref()
+            .map(|syntax| {
+                let mut declarations = Vec::new();
+                collect_module_declarations(&syntax.items, "", &mut declarations);
+                declarations
+            })
+            .unwrap_or_default();
+        let parent_path = sources[idx].path.clone();
+        let parent_module = sources[idx].module_path.clone();
+
+        for declaration in declarations {
+            let Some(child_path) =
+                resolve_declared_module(&parent_path, &crate_root, &declaration, diagnostics)
+            else {
+                continue;
+            };
+            let Some(&child_idx) = index.get(&path_key(&child_path)) else {
+                continue;
+            };
+            if visited[child_idx] {
+                continue;
+            }
+            visited[child_idx] = true;
+            let prefix = if declaration.prefix.is_empty() {
+                parent_module.clone()
+            } else {
+                format!("{parent_module}::{}", declaration.prefix)
+            };
+            sources[child_idx].module_path = format!("{prefix}::{}", declaration.name);
+            queue.push_back(child_idx);
+        }
+    }
+}
+
+fn path_key(path: &Path) -> PathBuf {
+    path.components().collect()
+}
+
+fn is_crate_root_file(path: &Path, crate_root: &Path) -> bool {
+    path == crate_root.join("src").join("lib.rs") || path == crate_root.join("src").join("main.rs")
+}
+
+fn collect_module_declarations(
+    items: &[syn::Item],
+    prefix: &str,
+    out: &mut Vec<ModuleDeclaration>,
+) {
+    for item in items {
+        let syn::Item::Mod(module) = item else {
+            continue;
+        };
+        let name = module.ident.to_string();
+        let nested_prefix = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}::{name}")
+        };
+        match &module.content {
+            Some((_, items)) => collect_module_declarations(items, &nested_prefix, out),
+            None => out.push(ModuleDeclaration {
+                name,
+                prefix: prefix.to_string(),
+                path_attr: module.attrs.iter().find_map(path_attribute),
+            }),
+        }
+    }
+}
+
+fn path_attribute(attribute: &syn::Attribute) -> Option<String> {
+    if !attribute.path().is_ident("path") {
+        return None;
+    }
+    let syn::Meta::NameValue(name_value) = &attribute.meta else {
+        return None;
+    };
+    let syn::Expr::Lit(literal) = &name_value.value else {
+        return None;
+    };
+    let syn::Lit::Str(value) = &literal.lit else {
+        return None;
+    };
+    Some(value.value())
+}
+
+fn resolve_declared_module(
+    parent_file: &Path,
+    crate_root: &Path,
+    declaration: &ModuleDeclaration,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<PathBuf> {
+    if let Some(raw) = &declaration.path_attr {
+        let base = parent_file.parent()?;
+        let candidate = normalize_lexical(&base.join(raw))?;
+        if !candidate.starts_with(crate_root) {
+            diagnostics.push(Diagnostic::warning(
+                DiagnosticCode::SourceModulePathRejected,
+                format!(
+                    "rejected #[path = {raw:?}] for module {:?}: it escapes the crate root",
+                    declaration.name
+                ),
+                Some(parent_file.to_path_buf()),
+            ));
+            return None;
+        }
+        return candidate.is_file().then_some(candidate);
+    }
+
+    let module_dir = module_directory(parent_file, crate_root)?;
+    let flat = module_dir.join(format!("{}.rs", declaration.name));
+    if flat.is_file() {
+        return Some(flat);
+    }
+    let nested = module_dir.join(&declaration.name).join("mod.rs");
+    nested.is_file().then_some(nested)
+}
+
+fn module_directory(path: &Path, crate_root: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?.to_path_buf();
+    let is_mod_rs = path.file_name().is_some_and(|name| name == "mod.rs");
+    if is_mod_rs || is_crate_root_file(path, crate_root) {
+        return Some(parent);
+    }
+    let stem = path.file_stem()?.to_string_lossy();
+    Some(parent.join(stem.as_ref()))
+}
+
+fn normalize_lexical(path: &Path) -> Option<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    Some(normalized)
+}
+
 /// Options controlling source loading and generated-code handling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SourceOptions {
@@ -1945,6 +2128,8 @@ pub fn load_sources_with_options(
         sources.push(source);
     }
 
+    resolve_module_paths(&mut sources, manifests, root, &mut diagnostics);
+
     LoadedSources {
         sources,
         diagnostics,
@@ -1985,6 +2170,119 @@ mod tests {
 
     fn parse(src: &str) -> ParsedSource {
         parse_source(Path::new("src/lib.rs"), Path::new("."), src)
+    }
+
+    fn temp_project(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "soroban-scan-modules-{}-{}",
+            name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn write(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn load_module_paths(
+        root: &Path,
+        files: &[PathBuf],
+    ) -> (Vec<(String, String)>, Vec<Diagnostic>) {
+        write(
+            &root.join("Cargo.toml"),
+            "[package]\nname = \"module-fixture\"\nversion = \"0.1.0\"\n",
+        );
+        let manifest = crate::manifest::parse_manifest(
+            &root.join("Cargo.toml"),
+            "[package]\nname = \"module-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let loaded = load_sources_with_options(files, &[manifest], root, SourceOptions::default());
+        let paths = loaded
+            .sources
+            .iter()
+            .map(|source| {
+                (
+                    source
+                        .path
+                        .strip_prefix(root)
+                        .unwrap_or(&source.path)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    source.module_path.clone(),
+                )
+            })
+            .collect();
+        (paths, loaded.diagnostics)
+    }
+
+    #[test]
+    fn module_paths_follow_mod_declarations_and_mod_rs() {
+        let root = temp_project("mod-rs");
+        let lib = root.join("src/lib.rs");
+        let foo = root.join("src/foo.rs");
+        let bar = root.join("src/foo/bar.rs");
+        let baz_mod = root.join("src/foo/baz/mod.rs");
+        let baz_qux = root.join("src/foo/baz/qux.rs");
+        write(&lib, "mod foo;\n");
+        write(&foo, "mod bar;\nmod baz;\n");
+        write(&bar, "pub fn bar() {}\n");
+        write(&baz_mod, "mod qux;\n");
+        write(&baz_qux, "pub fn qux() {}\n");
+
+        let (paths, diagnostics) = load_module_paths(&root, &[lib, foo, bar, baz_mod, baz_qux]);
+
+        let by_file: std::collections::BTreeMap<_, _> = paths.into_iter().collect();
+        assert_eq!(by_file["src/lib.rs"], "crate");
+        assert_eq!(by_file["src/foo.rs"], "crate::foo");
+        assert_eq!(by_file["src/foo/bar.rs"], "crate::foo::bar");
+        assert_eq!(by_file["src/foo/baz/mod.rs"], "crate::foo::baz");
+        assert_eq!(by_file["src/foo/baz/qux.rs"], "crate::foo::baz::qux");
+        assert!(!diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::SourceModulePathRejected));
+    }
+
+    #[test]
+    fn module_paths_honor_path_attributes() {
+        let root = temp_project("path-attr");
+        let lib = root.join("src/lib.rs");
+        let custom = root.join("src/alt/custom.rs");
+        write(&lib, "#[path = \"alt/custom.rs\"]\nmod custom;\n");
+        write(&custom, "pub fn custom() {}\n");
+
+        let (paths, diagnostics) = load_module_paths(&root, &[lib, custom]);
+
+        let by_file: std::collections::BTreeMap<_, _> = paths.into_iter().collect();
+        assert_eq!(by_file["src/alt/custom.rs"], "crate::custom");
+        assert!(!diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::SourceModulePathRejected));
+    }
+
+    #[test]
+    fn path_attributes_escaping_the_crate_root_are_rejected() {
+        let root = temp_project("path-escape");
+        let lib = root.join("src/lib.rs");
+        let outside = root.join("outside.rs");
+        write(&lib, "#[path = \"../../outside.rs\"]\nmod escape;\n");
+        write(&outside, "pub fn outside() {}\n");
+
+        let (paths, diagnostics) = load_module_paths(&root, &[lib, outside]);
+
+        let by_file: std::collections::BTreeMap<_, _> = paths.into_iter().collect();
+        assert_eq!(by_file["src/lib.rs"], "crate");
+        // The escaped file is not attached to the declared module name.
+        assert_eq!(by_file["outside.rs"], "crate::outside");
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::SourceModulePathRejected));
     }
 
     #[test]

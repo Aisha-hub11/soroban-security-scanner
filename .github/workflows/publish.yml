@@ -102,12 +102,14 @@ jobs:
         run: cargo publish -p soroban-scan-cli --locked
 
   release:
-    name: Publish GitHub release notes
+    name: Publish GitHub release notes and artifacts
     needs: [verify, publish]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v5
 
@@ -128,3 +130,33 @@ jobs:
               --notes-file release-notes.md \
               --verify-tag
           fi
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx \
+            --format json \
+            --manifest-path crates/soroban-scan-cli/Cargo.toml \
+            --override-filename sbom
+          test -f crates/soroban-scan-cli/sbom.json
+          cp crates/soroban-scan-cli/sbom.json soroban-scan.cdx.json
+
+      - name: Build the release binary
+        run: |
+          cargo build --release -p soroban-scan-cli
+          tar -czf soroban-scan-x86_64-unknown-linux-gnu.tar.gz \
+            -C target/release soroban-scan
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: soroban-scan-x86_64-unknown-linux-gnu.tar.gz
+
+      - name: Upload SBOM and binary to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            soroban-scan.cdx.json \
+            soroban-scan-x86_64-unknown-linux-gnu.tar.gz \
+            --clobber
