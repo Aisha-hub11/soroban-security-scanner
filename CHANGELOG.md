@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add an editor integration (LSP) spike covering a minimal diagnostics provider,
+  core-library reuse, protocol scope, security, testing, and follow-up tasks
+  (`#168`).
 - Document the optional AI provider data flow, the exact data a provider
   receives, exclusions, retention caveats, and offline alternatives, linked from
   the AI guide (`#86`).
