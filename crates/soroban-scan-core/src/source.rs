@@ -182,6 +182,8 @@ pub struct FunctionSummary {
     pub is_async: bool,
     /// Attribute path strings on the function.
     pub attributes: Vec<String>,
+    /// Joined doc-comment text (`///` or `#[doc = "..."]`), if any.
+    pub doc: String,
     /// Parameters.
     pub params: Vec<ParamSummary>,
     /// Rendered return type, if not `()`.
@@ -222,6 +224,8 @@ pub struct ItemSummary {
     pub trait_path: Option<String>,
     /// Attribute path strings.
     pub attributes: Vec<String>,
+    /// Joined doc-comment text (`///` or `#[doc = "..."]`), if any.
+    pub doc: String,
 }
 
 /// A `macro_rules!` definition found in a source file.
@@ -392,6 +396,35 @@ fn attribute_paths(attrs: &[syn::Attribute]) -> Vec<String> {
     attrs.iter().map(attribute_path).collect()
 }
 
+/// Joins doc comments from `///`, `//!`, and `#[doc = "..."]` attributes.
+///
+/// Rust stores doc comments as `#[doc = " ..."]` attributes. Each attribute is
+/// split on newlines so multi-line block comments are preserved. One leading
+/// space (the conventional doc-comment margin) is removed per line, and the
+/// outer blank lines are trimmed.
+fn doc_comments(attrs: &[syn::Attribute]) -> String {
+    let mut lines = Vec::new();
+    for attr in attrs {
+        if !attr.path().is_ident("doc") {
+            continue;
+        }
+        let syn::Meta::NameValue(name_value) = &attr.meta else {
+            continue;
+        };
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(text),
+            ..
+        }) = &name_value.value
+        else {
+            continue;
+        };
+        for line in text.value().split('\n') {
+            lines.push(line.strip_prefix(' ').unwrap_or(line).to_string());
+        }
+    }
+    lines.join("\n").trim().to_string()
+}
+
 fn vis_is_public(vis: &syn::Visibility) -> bool {
     matches!(vis, syn::Visibility::Public(_))
 }
@@ -523,6 +556,7 @@ fn make_function(
         visibility,
         is_async: sig.asyncness.is_some(),
         attributes: attribute_paths(attrs),
+        doc: doc_comments(attrs),
         params: params_of(sig),
         return_type: return_of(sig),
         in_impl: impl_ctx.map(|c| c.name.clone()),
@@ -915,6 +949,7 @@ fn item_summary(
         is_public,
         trait_path: None,
         attributes: attribute_paths(attrs),
+        doc: doc_comments(attrs),
     }
 }
 
@@ -2294,6 +2329,55 @@ mod tests {
         assert_eq!(s.functions[0].line, 1);
         assert_eq!(s.functions[1].name, "b");
         assert_eq!(s.functions[1].line, 3);
+    }
+
+    #[test]
+    fn captures_multiline_doc_comments_on_functions() {
+        let s = parse(
+            "/// Permissionless: no auth required.\n\
+             ///\n\
+             /// Called by the settlement worker.\n\
+             pub fn settle() {}\n",
+        );
+        assert_eq!(s.functions.len(), 1);
+        assert_eq!(
+            s.functions[0].doc,
+            "Permissionless: no auth required.\n\nCalled by the settlement worker."
+        );
+    }
+
+    #[test]
+    fn captures_doc_comments_on_non_function_items() {
+        let s = parse(
+            "/// Stored settlement record.\n\
+             ///\n\
+             /// Kept stable for migrations.\n\
+             pub struct Settlement {\n    pub amount: i128,\n}\n",
+        );
+        let item = s
+            .items
+            .iter()
+            .find(|item| item.name == "Settlement")
+            .expect("struct item");
+        assert_eq!(
+            item.doc,
+            "Stored settlement record.\n\nKept stable for migrations."
+        );
+    }
+
+    #[test]
+    fn captures_explicit_doc_attribute_forms() {
+        let s = parse("#[doc = \"Explicit first line\"]\n#[doc = \"Explicit second line\"]\nfn documented() {}\n");
+        assert_eq!(
+            s.functions[0].doc,
+            "Explicit first line\nExplicit second line"
+        );
+    }
+
+    #[test]
+    fn undocumented_items_have_empty_doc() {
+        let s = parse("fn plain() {}\n");
+        assert_eq!(s.functions[0].doc, "");
     }
 
     #[test]

@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Function and non-function item inventory entries expose joined doc comments
+  (`///`, `//!`, and `#[doc = "..."]`) as `doc`, including multiline comments
+  (`#46`).
 - Every GitHub Actions reference is pinned to an immutable commit SHA with a
   version comment, and Dependabot updates the pins weekly (`#54`).
 - `--log-level` emits structured JSON log lines to stderr (disabled by default);
