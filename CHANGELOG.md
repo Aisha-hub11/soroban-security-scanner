@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Document the optional AI provider data flow, the exact data a provider
+  receives, exclusions, retention caveats, and offline alternatives, linked from
+  the AI guide (`#86`).
 - Function and non-function item inventory entries expose joined doc comments
   (`///`, `//!`, and `#[doc = "..."]`) as `doc`, including multiline comments
   (`#46`).
