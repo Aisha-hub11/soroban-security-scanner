@@ -8,6 +8,7 @@ members = [
 exclude = [
     "examples/*",
     "fixtures/*",
+    "fuzz",
 ]
 
 [workspace.package]

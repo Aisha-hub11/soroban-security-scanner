@@ -66,3 +66,28 @@ samples.
 
 Tests assert that scanning the same fixture twice produces byte-identical
 machine-readable output.
+
+## Fuzzing
+
+The parser consumes untrusted source, so it is fuzzed with
+[`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz). The target lives in
+`fuzz/` (a separate workspace, excluded from the main build) and calls
+`parse_source` on arbitrary bytes decoded as lossy UTF-8; it performs no
+filesystem access.
+
+Install the toolchain and run it locally:
+
+```sh
+rustup toolchain install nightly
+cargo install cargo-fuzz
+cargo fuzz run parse_source
+```
+
+CI runs a bounded smoke case from the scheduled `Fuzz` workflow:
+
+```sh
+cargo fuzz run parse_source -- -runs=2000
+```
+
+Minimize any regression with `cargo fuzz tmin parse_source <input>` and add it
+under `fixtures/` as a permanent regression case.
