@@ -47,10 +47,21 @@ pre-1.0 minor releases may contain breaking changes. Revisit that setting when
    git push origin main --follow-tags
    ```
 
-7. Create the GitHub release:
+7. The `publish.yml` workflow creates or updates the GitHub release from the
+   matching `## [X.Y.Z]` section of `CHANGELOG.md`. Preview the body locally
+   before tagging:
 
    ```bash
-   gh release create vX.Y.Z --title "vX.Y.Z" --notes-file CHANGELOG.md
+   python3 tools/release_notes.py --tag vX.Y.Z
+   ```
+
+   A missing or empty section fails the `verify` job, so a release can never be
+   published with notes that do not exist. To exercise the path on a
+   pre-release tag without publishing crates or creating a release, run the
+   workflow in dry-run mode against that tag:
+
+   ```bash
+   gh workflow run publish.yml --ref vX.Y.Z-rc.1 -f dry_run=true
    ```
 
 8. Verify the release and tag on GitHub.
