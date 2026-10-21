@@ -14,6 +14,16 @@ deterministic result.
 - Assistance never accesses secrets, submits transactions, or modifies code.
 - Assistance output is always labeled as assistance.
 
+## Privacy and data flow
+
+What can leave the machine, the exact data a provider receives, retention
+caveats, and offline alternatives are documented in
+[AI assistance privacy and data flow](ai-privacy.md). The short version: the
+default build ships no provider and makes no network requests. A provider can
+only reach finding context through the `Assistant` trait — never whole files,
+environment variables, or credentials — and the exact fields are listed in
+that document.
+
 ## Offline guidance (no model, no network)
 
 `--guidance` prints deterministic, rule-based guidance derived solely from the
@@ -45,8 +55,10 @@ model provider) tokens.
   from discovery).
 - The cache is content-addressed: keys are SHA-256 digests and filenames contain
   no evidence or source text.
-- Only the rendered explanation is stored. Source files, secrets, environment
-  variables, and request payloads are never cached.
+- Only the rendered explanation is stored. Request payloads, environment
+  variables, and whole source files are never cached. Note that the rendered
+  explanation contains the finding's evidence snippet and file path, so the
+  cache directory is as sensitive as the source it describes.
 - Storage is bounded to `DEFAULT_MAX_ENTRIES` (256). When full, the
   least-recently-used entry is evicted deterministically (oldest access first,
   ties by key).
