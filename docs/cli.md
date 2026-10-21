@@ -54,8 +54,25 @@ roots in one run.
 | `--quiet`, `-q` | Compact output; suppresses the header. |
 | `--verbose`, `-v` | Include diagnostics (see [diagnostics.md](diagnostics.md)). |
 | `--timings` | Print per-rule wall-clock time to stderr. Presentation-only: never appears in JSON/SARIF/Markdown/GitHub output and never changes findings, ordering, fingerprints or the exit gate. |
+| `--log-level <off\|error\|warn\|info\|debug>` | Emit structured JSON log lines to stderr (default `off`). Stdout stays reserved for the report; logs never include source text, environment values, or absolute home paths. |
 | `--pager <auto\|never\|always>` | Page long terminal reports through `$PAGER` (default `auto`); never affects JSON/SARIF/Markdown/GitHub output. |
 | `--color <auto\|always\|never>` | Colorize terminal output (default `auto`). Machine formats never contain ANSI escapes. |
+
+### Structured logs
+
+`--log-level` writes one JSON object per line to stderr; it is disabled by
+default so existing output is unchanged. Stdout is never touched, so `--format
+json` remains machine-parseable.
+
+```bash
+soroban-scan scan ./contracts --format json --log-level info > report.json
+# stderr:
+# {"level":"info","event":"scan.start","roots":1,"stdin":false,...}
+# {"level":"info","event":"scan.complete","files_analyzed":12,"findings":3,...}
+```
+
+Only counts, rule/format labels, and durations are logged. Scanned source,
+environment variables, secrets, and absolute home paths are never logged.
 
 ### Per-rule timings
 
@@ -329,7 +346,9 @@ network access.
   settings used for the scan, excluding environment data and secrets. `stats`
   includes `files_parsed`, `files_failed`, and `files_skipped` so coverage gaps
   are visible. When `--max-findings` omits findings, a `truncation` object
-  reports the counts.
+  reports the counts. The published JSON Schema is
+  [`docs/integration/report.schema.json`](integration/report.schema.json); a
+  CLI test validates a real report against it on every run.
 - **sarif** — SARIF 2.1.0 for GitHub code scanning and compatible tools.
 - **markdown** — report suitable for pull requests and documentation. The
   summary includes a severity table, the most frequent rule ids, and the
