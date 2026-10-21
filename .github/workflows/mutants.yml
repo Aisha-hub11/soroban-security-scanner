@@ -1,0 +1,71 @@
+name: Mutation testing
+
+on:
+  schedule:
+    # Weekly, Monday 04:00 UTC.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutants-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  mutants:
+    name: cargo-mutants (core engine + fingerprints)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Run mutation tests
+        # Informational while the baseline is established: surviving mutants are
+        # recorded in the summary and artifact, not a hard gate yet.
+        continue-on-error: true
+        run: |
+          cargo mutants \
+            -p soroban-scan-core \
+            --file crates/soroban-scan-core/src/engine.rs \
+            --file crates/soroban-scan-core/src/finding.rs \
+            --cargo-test-arg --lib \
+            --timeout 60 \
+            --jobs 2 \
+            --no-shuffle
+
+      - name: Summarize results
+        if: always()
+        run: |
+          {
+            echo "### Mutation testing (core engine + fingerprints)"
+            echo
+            for outcome in caught missed timeout unviable; do
+              if [ -f "mutants.out/${outcome}.txt" ]; then
+                echo "- ${outcome}: $(grep -c . "mutants.out/${outcome}.txt")"
+              fi
+            done
+            echo
+            echo "Full results are attached as the \`mutants.out\` artifact."
+            echo "Baseline and scope: docs/development/mutation-testing.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants.out
+          path: mutants.out
+          if-no-files-found: warn
