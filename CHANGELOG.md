@@ -12,9 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Baseline parsing now fails closed on empty, truncated, or corrupted JSON/TOML,
   with the file path and parser position in the error. A truncated baseline
   exits `3` instead of being treated as empty.
+- Source parsing strips a leading UTF-8 BOM and normalizes CRLF/CR line endings
+  in memory before parsing, so spans stay accurate on Windows-authored files.
+  Scanned files are never modified (`#98`).
+- Findings from the same rule and file whose inclusive line ranges overlap are
+  now collapsed to the earliest, most specific finding. Adjacent spans and
+  findings from different rules/files are kept (`#107`).
 
 ### Added
 
+- A circuit breaker for the optional assistance layer: after
+  `ai.failure_threshold` consecutive provider failures (default `3`),
+  assistance is disabled for the remainder of the run and `AI-002` is printed.
+  The deterministic scan result is unchanged (`#89`).
+- Release notes are generated from the matching `CHANGELOG.md` section by
+  `tools/release_notes.py`; the publish workflow fails verification when no
+  section exists and creates/updates the GitHub release from it (`#91`).
 - Add `.github/CODEOWNERS` for the rule engine, security-sensitive core
   modules, security/rule docs, and CI workflows.
 - Add a workspace layout and module dependency map, kept in sync with
