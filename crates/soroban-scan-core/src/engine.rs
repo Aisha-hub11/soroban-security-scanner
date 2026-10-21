@@ -2137,3 +2137,58 @@ mod tests {
             .any(|diagnostic| diagnostic.code == DiagnosticCode::GeneratedFileExcluded));
     }
 }
+
+#[cfg(test)]
+mod path_normalization_tests {
+    use super::{is_safe_relative, normalize_rel};
+    use std::path::Path;
+
+    #[test]
+    fn normalize_rel_emits_forward_slashes_for_native_and_forward_separators() {
+        assert_eq!(normalize_rel(Path::new("src/lib.rs")), "src/lib.rs");
+        assert_eq!(normalize_rel(Path::new("src\\lib.rs")), "src/lib.rs");
+        assert_eq!(
+            normalize_rel(Path::new("crates\\core\\src\\lib.rs")),
+            "crates/core/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn normalize_rel_strips_a_leading_current_dir() {
+        assert_eq!(normalize_rel(Path::new("./src/lib.rs")), "src/lib.rs");
+        // A bare "." is left as-is rather than becoming empty.
+        assert_eq!(normalize_rel(Path::new(".")), ".");
+    }
+
+    #[test]
+    fn normalize_rel_preserves_drive_letters_and_case() {
+        assert_eq!(
+            normalize_rel(Path::new("C:\\Repo\\Src\\Lib.rs")),
+            "C:/Repo/Src/Lib.rs"
+        );
+        assert_eq!(
+            normalize_rel(Path::new("c:/repo/src/lib.rs")),
+            "c:/repo/src/lib.rs"
+        );
+        assert_eq!(
+            normalize_rel(Path::new("C:/Repo/Src/Lib.rs")),
+            "C:/Repo/Src/Lib.rs"
+        );
+    }
+
+    #[test]
+    fn rel_logic_accepts_both_separator_styles() {
+        // Both spellings denote a safe, relative path on every platform.
+        assert!(is_safe_relative(Path::new("src/lib.rs")));
+        assert!(is_safe_relative(Path::new("src\\lib.rs")));
+        assert!(is_safe_relative(Path::new("./src/lib.rs")));
+    }
+
+    #[test]
+    fn traversal_and_absolute_paths_are_rejected() {
+        assert!(!is_safe_relative(Path::new("../secret.rs")));
+        assert!(!is_safe_relative(Path::new("src/../../secret.rs")));
+        assert!(!is_safe_relative(Path::new("/etc/passwd")));
+        assert!(!is_safe_relative(Path::new("")));
+    }
+}
