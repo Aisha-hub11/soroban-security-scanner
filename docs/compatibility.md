@@ -4,11 +4,10 @@
 
 - **Policy:** a recent stable Rust toolchain. CI builds and tests on stable for
   Linux (x86_64 and aarch64), Windows, and macOS.
-- **Verified with:** Rust 1.97.1.
-- **MSRV:** not currently guaranteed. Historical toolchains could not be
-  verified in the development environment, so no `rust-version` is declared. A
-  pinned, tested MSRV is tracked as future work. Do not rely on a specific
-  minimum until it is declared and CI-tested.
+- **Verified with:** Rust 1.99.0.
+- **MSRV:** Rust **1.91.0**. Every crate declares `rust-version = "1.91"`, and
+  the CI `msrv` job builds and tests the workspace with `--locked` on that exact
+  toolchain, so this is the minimum downstream users can rely on.
 
 ## Operating systems
 
