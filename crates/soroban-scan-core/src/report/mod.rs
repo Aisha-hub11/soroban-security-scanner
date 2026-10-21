@@ -466,6 +466,8 @@ struct StatsSummary {
     config_suppressions_applied: usize,
     generated_files_marked: usize,
     generated_files_excluded: usize,
+    /// Gate findings grouped by stable category name.
+    findings_by_category: BTreeMap<String, usize>,
 }
 
 /// A detected suppression directive in JSON reports.
@@ -539,6 +541,7 @@ pub fn render_json(outcome: &ScanOutcome) -> Result<String, serde_json::Error> {
             config_suppressions_applied: outcome.stats.config_suppressions_applied,
             generated_files_marked: outcome.stats.generated_files_marked,
             generated_files_excluded: outcome.stats.generated_files_excluded,
+            findings_by_category: outcome.stats.findings_by_category.clone(),
         },
         effective_config: &outcome.config,
         findings: &outcome.findings,
