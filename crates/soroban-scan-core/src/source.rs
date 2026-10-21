@@ -182,7 +182,8 @@ pub struct FunctionSummary {
     pub is_async: bool,
     /// Attribute path strings on the function.
     pub attributes: Vec<String>,
-    /// Joined doc-comment text (`///` or `#[doc = "..."]`), if any.
+    /// Joined doc-comment text attached to this function (`///`, `/** ... */`,
+    /// or `#[doc = "..."]`), if any.
     pub doc: String,
     /// Parameters.
     pub params: Vec<ParamSummary>,
@@ -224,7 +225,8 @@ pub struct ItemSummary {
     pub trait_path: Option<String>,
     /// Attribute path strings.
     pub attributes: Vec<String>,
-    /// Joined doc-comment text (`///` or `#[doc = "..."]`), if any.
+    /// Joined doc-comment text attached to this item (`///`, `/** ... */`, or
+    /// `#[doc = "..."]`), if any.
     pub doc: String,
 }
 
@@ -396,12 +398,21 @@ fn attribute_paths(attrs: &[syn::Attribute]) -> Vec<String> {
     attrs.iter().map(attribute_path).collect()
 }
 
-/// Joins doc comments from `///`, `//!`, and `#[doc = "..."]` attributes.
+/// Joins the doc comments attached to an inventoried item.
 ///
-/// Rust stores doc comments as `#[doc = " ..."]` attributes. Each attribute is
-/// split on newlines so multi-line block comments are preserved. One leading
+/// Rust stores doc comments as `#[doc = " ..."]` attributes, so `///`,
+/// `/** ... */` and `#[doc = "..."]` are read identically here. Each attribute
+/// is split on newlines so multi-line block comments are preserved. One leading
 /// space (the conventional doc-comment margin) is removed per line, and the
-/// outer blank lines are trimmed.
+/// outer blank lines are trimmed. A block comment keeps its `*` gutter
+/// verbatim, because only the space before it is removed.
+///
+/// Scope: only the attributes of the inventoried item are read. A file-level
+/// inner comment (`//!`, or `/*! ... */`, at the top of a file) is an inner
+/// attribute of the *file* rather than of any item, so `syn` keeps it in
+/// `syn::File::attrs`; it is reachable through [`ParsedSource::syntax`] and is
+/// never reported as an item's `doc`. An inner comment inside a `mod` body
+/// belongs to that module, so it is reported on the module item.
 fn doc_comments(attrs: &[syn::Attribute]) -> String {
     let mut lines = Vec::new();
     for attr in attrs {
@@ -2378,6 +2389,62 @@ mod tests {
     fn undocumented_items_have_empty_doc() {
         let s = parse("fn plain() {}\n");
         assert_eq!(s.functions[0].doc, "");
+    }
+
+    #[test]
+    fn file_level_inner_comments_stay_on_the_file_and_not_on_items() {
+        // `//!` and `/*! ... */` at the top of a file are inner attributes of
+        // the file, not of the item that follows them, so `syn` keeps them in
+        // `File::attrs`.
+        for src in [
+            "//! Module doc.\npub fn f() {}\n",
+            "/*! Module doc. */\npub fn f() {}\n",
+        ] {
+            let s = parse(src);
+            assert!(s.is_parsed(), "parse error: {:?}", s.parse_error);
+            assert_eq!(s.functions.len(), 1);
+            assert_eq!(s.functions[0].doc, "");
+
+            let syntax = s.syntax.as_ref().expect("parsed syntax tree");
+            assert!(
+                syntax.attrs.iter().any(|attr| {
+                    attr.path().is_ident("doc") && matches!(&attr.meta, syn::Meta::NameValue(_))
+                }),
+                "file-level doc attribute is expected on the file: {:?}",
+                syntax.attrs
+            );
+        }
+    }
+
+    #[test]
+    fn inner_comments_inside_a_module_are_reported_on_the_module() {
+        // `//!` inside a `mod` body is an inner attribute of that module, so
+        // `syn` attaches it to the module item and it is inventoried there.
+        let s = parse(
+            "pub mod inner {\n\
+             //! Inner module doc.\n\
+             pub fn g() {}\n\
+             }\n",
+        );
+        assert!(s.is_parsed(), "parse error: {:?}", s.parse_error);
+        let module = s
+            .items
+            .iter()
+            .find(|item| item.name == "inner")
+            .expect("module item");
+        assert_eq!(module.kind, ItemKind::Module);
+        assert_eq!(module.doc, "Inner module doc.");
+    }
+
+    #[test]
+    fn block_doc_comments_keep_their_gutter_verbatim() {
+        // Only one leading space is removed per line, so the `*` gutter of a
+        // block comment survives into the joined text.
+        let s = parse("/**\n * Block doc line.\n */\npub fn f() {}\n");
+        assert_eq!(s.functions[0].doc, "* Block doc line.");
+
+        let single_line = parse("/** Block doc line. */\npub fn g() {}\n");
+        assert_eq!(single_line.functions[0].doc, "Block doc line.");
     }
 
     #[test]

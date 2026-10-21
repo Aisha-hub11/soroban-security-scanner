@@ -34,6 +34,10 @@ this document as stable or unstable, and that stable modules remain documented.
 CI also runs [`cargo-semver-checks`](https://github.com/obi1kenobi/cargo-semver-checks)
 on every pull request, scoped to `soroban-scan-core`, comparing the branch
 against the latest `v*` release tag. While the crate is pre-1.0, the check uses
-`release-type: minor`, so breaking changes are reported but allowed in a minor
-release (see [`development/release.md`](development/release.md)). Once 1.0 ships,
-the release type should be tightened.
+`release-type: minor`. That relaxes the lints a minor release satisfies, but it
+does **not** relax lints that require a major version: `cargo-semver-checks`
+still exits non-zero and reports `Summary semver requires new major version`
+for those, and the job still fails. A breaking change to the stable surface
+therefore needs a deliberate version bump even while the crate is pre-1.0 (see
+[`development/release.md`](development/release.md)). Once 1.0 ships, the
+release type should be tightened.

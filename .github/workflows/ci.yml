@@ -98,7 +98,8 @@ jobs:
         with:
           package: soroban-scan-core
           baseline-rev: ${{ steps.baseline.outputs.tag }}
-          # The crate is pre-1.0: minor releases may contain breaking changes
+          # Pre-1.0: `release-type: minor` relaxes the lints a minor release
+          # satisfies. Lints that require a major version still fail the job
           # (see docs/development/release.md). Revisit this once 1.0 ships.
           release-type: minor
 

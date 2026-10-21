@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workspace members using `{ workspace = true }` now inherit the workspace
   dependency version, merged features, and default-feature setting while keeping
   `source = workspace` to record the inheritance (`#43`).
+- Documentation now states the exact scope of doc-comment capture: only the
+  attributes of the inventoried item are joined, a file-level inner comment
+  (`//!`) stays on the parsed syntax tree, and an inner comment inside a `mod`
+  body is reported on that module.
+- The API-stability and release docs no longer claim that the semver check's
+  `release-type: minor` allows breaking changes: it relaxes the lints a minor
+  release satisfies, while lints that require a major version still fail the
+  job.
+- The AI privacy document now describes `Finding.fingerprint` as the truncated
+  (128-bit) SHA-256 digest it actually is, and the editor-integration spec
+  points at `discovery::DiscoveryOptions` instead of `config::DiscoveryOptions`.
 
 ### Added
 
@@ -35,9 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Document the optional AI provider data flow, the exact data a provider
   receives, exclusions, retention caveats, and offline alternatives, linked from
   the AI guide (`#86`).
-- Function and non-function item inventory entries expose joined doc comments
-  (`///`, `//!`, and `#[doc = "..."]`) as `doc`, including multiline comments
-  (`#46`).
+- Function and non-function item inventory entries expose the joined doc
+  comments attached to the item (`///`, `/** ... */`, and `#[doc = "..."]`) as
+  `doc`, including multiline comments. A file-level inner comment (`//!`) is an
+  attribute of the file rather than of an item, so it stays on the parsed
+  syntax tree instead of being reported as an item's `doc` (`#46`).
 - Every GitHub Actions reference is pinned to an immutable commit SHA with a
   version comment, and Dependabot updates the pins weekly (`#54`).
 - `--log-level` emits structured JSON log lines to stderr (disabled by default);

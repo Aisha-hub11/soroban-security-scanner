@@ -98,7 +98,7 @@ editor results cannot drift.
 
 | Need | Existing API |
 | ---- | ------------ |
-| Load config and discovery options | `config::ScanConfig`, `config::DiscoveryOptions` |
+| Load config and discovery options | `config::ScanConfig`, `discovery::DiscoveryOptions` |
 | Parse a document or project | `project::load_files_with_options`, `source::parse_source_with_options` |
 | Run rules and apply suppressions/baselines | `engine::scan`, `engine::scan_source_str` |
 | Finding fields and ranges | `finding::Finding`, `finding::SourceLocation` |
