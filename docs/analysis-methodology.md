@@ -153,6 +153,16 @@ Module paths follow external `mod name;` declarations from each crate root:
 rejected with `SOURCE-003`; the file keeps its best-effort file-based path.
 Unreachable files also keep the file-based fallback.
 
+## Rule isolation
+
+Every rule invocation runs inside `std::panic::catch_unwind` with
+`AssertUnwindSafe`. A rule that panics is recorded as a `RULE-004` diagnostic,
+counted in `stats.rules_failed`, and its partial findings are discarded; the
+remaining rules still run and the deterministic report is still produced. Panic
+messages are shortened before they enter diagnostics and never include source
+content. This makes hostile input or a buggy third-party rule a contained
+failure rather than a scanner crash (`#103`).
+
 ## Finding de-duplication
 
 After rules run, findings are sorted deterministically and then collapsed with

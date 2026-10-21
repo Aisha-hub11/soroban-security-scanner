@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Rule panics are isolated per invocation (`RULE-004`), other rules continue,
+  and a regression test now proves findings from healthy rules survive (`#103`).
 - Rules now execute in ascending rule-id order, so diagnostics and per-rule
   timings are identical across registries with different registration order
   (`#106`).

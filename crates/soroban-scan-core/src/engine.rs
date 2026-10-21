@@ -1875,6 +1875,28 @@ mod tests {
     }
 
     #[test]
+    fn a_panicking_rule_does_not_stop_other_rules() {
+        let (root, loaded) = project_with_source("panic-isolation", "fn a() {}\n");
+        let mut registry = RuleRegistry::new();
+        registry
+            .register(Box::new(OneFindingRule::new(Severity::High)))
+            .unwrap();
+        registry.register(Box::new(PanickingRule::new())).unwrap();
+
+        let outcome = scan(&loaded, &registry, &ScanConfig::default());
+
+        assert_eq!(outcome.stats.rules_failed, 1);
+        assert_eq!(outcome.stats.rules_run, 2);
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(outcome.findings[0].rule_id, "SS-001");
+        assert!(outcome
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::RulePanicked));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn rule_execution_order_is_independent_of_registration_order() {
         let (root, loaded) = project_with_source("rule-order", "fn a() {}\n");
 
