@@ -68,9 +68,20 @@ pre-1.0 minor releases may contain breaking changes. Revisit that setting when
 
 ## Artifacts
 
-Source is the primary artifact. Prebuilt binaries for Linux, macOS, and Windows
-are attached to releases once a cross-compilation workflow is added (tracked as
-future work).
+Source is the primary artifact. The tag workflow also builds a Linux
+`soroban-scan` binary, generates a CycloneDX JSON SBOM with `cargo-cyclonedx`,
+attests build provenance with GitHub artifact attestations, and attaches both
+files to the GitHub release.
+
+Verify a downloaded artifact with the GitHub CLI:
+
+```bash
+gh attestation verify soroban-scan-x86_64-unknown-linux-gnu.tar.gz \
+  --repo StellarFoundry/soroban-security-scanner
+```
+
+Prebuilt binaries for macOS and Windows are added once cross-compilation is
+wired into the release workflow (tracked as future work).
 
 ## Package publishing
 
