@@ -35,8 +35,30 @@ automatically as the CLI's dependency.
 
 ## Prebuilt binaries
 
-Prebuilt binaries are added when the first tagged release is published. Until
-then, build from source.
+Tagged releases attach prebuilt archives for:
+
+| Platform | Target |
+| --- | --- |
+| Linux (glibc) | `x86_64-unknown-linux-gnu` |
+| Linux (static musl) | `x86_64-unknown-linux-musl` |
+| macOS (Intel) | `x86_64-apple-darwin` |
+| macOS (Apple Silicon) | `aarch64-apple-darwin` |
+| Windows | `x86_64-pc-windows-msvc` |
+
+Download `soroban-scan-<target>.tar.gz` (`.zip` on Windows) and `SHA256SUMS`
+from the release, then verify before extracting:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+Release archives are built by CI from the tagged commit and carry a build
+provenance attestation:
+
+```bash
+gh attestation verify soroban-scan-x86_64-unknown-linux-gnu.tar.gz \
+  --repo AyinkxLab/soroban-security-scanner
+```
 
 ## Verify the installation
 
