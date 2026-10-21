@@ -35,6 +35,7 @@ can classify or suppress them without parsing the human-readable message.
 | `CONFIG-001` | warning | A severity or confidence override has no effect because its rule is unknown or disabled. |
 | `BASELINE-001` | warning | A baseline references a rule id that is no longer registered; the entry remains forward compatible. |
 | `AI-001` | warning | The optional assistance layer reached its configured request budget; the scan continued without further AI calls. |
+| `AI-002` | warning | Repeated provider failures opened the assistance circuit breaker; the scan continued without further AI calls. |
 
 Codes are grouped by area: `PARSE-*`, `MANIFEST-*`, `SOURCE-*`, `CRATE-*`,
 `RULE-*`, `CONFIG-*`, and `BASELINE-*`. `config validate` prints `CONFIG-*` warnings to

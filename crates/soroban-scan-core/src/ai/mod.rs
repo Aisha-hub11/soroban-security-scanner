@@ -82,6 +82,9 @@ pub struct AiConfig {
     pub backoff_ms: u64,
     /// Upper bound for a single backoff delay in milliseconds.
     pub max_backoff_ms: u64,
+    /// Consecutive provider failures allowed before assistance is disabled for
+    /// the remainder of the run. Defaults to three.
+    pub failure_threshold: usize,
 }
 
 impl Default for AiConfig {
@@ -96,6 +99,7 @@ impl Default for AiConfig {
             max_retries: DEFAULT_MAX_RETRIES,
             backoff_ms: DEFAULT_BACKOFF_MS,
             max_backoff_ms: DEFAULT_MAX_BACKOFF_MS,
+            failure_threshold: DEFAULT_FAILURE_THRESHOLD,
         }
     }
 }
@@ -121,6 +125,16 @@ pub enum AiConfigError {
         /// Highest accepted value.
         max: u32,
     },
+    /// Circuit-breaker failure threshold is outside the accepted range.
+    #[error("ai.failure_threshold must be between {min} and {max} (got {value})")]
+    FailureThreshold {
+        /// Rejected value.
+        value: usize,
+        /// Lowest accepted value.
+        min: usize,
+        /// Highest accepted value.
+        max: usize,
+    },
 }
 
 impl AiConfig {
@@ -142,6 +156,13 @@ impl AiConfig {
                 max: MAX_MAX_OUTPUT_TOKENS,
             });
         }
+        if !(MIN_FAILURE_THRESHOLD..=MAX_FAILURE_THRESHOLD).contains(&self.failure_threshold) {
+            return Err(AiConfigError::FailureThreshold {
+                value: self.failure_threshold,
+                min: MIN_FAILURE_THRESHOLD,
+                max: MAX_FAILURE_THRESHOLD,
+            });
+        }
         Ok(())
     }
 }
@@ -154,6 +175,12 @@ pub const DEFAULT_MAX_RETRIES: usize = 2;
 pub const DEFAULT_BACKOFF_MS: u64 = 250;
 /// Default maximum backoff delay.
 pub const DEFAULT_MAX_BACKOFF_MS: u64 = 4_000;
+/// Default number of consecutive provider failures before the circuit opens.
+pub const DEFAULT_FAILURE_THRESHOLD: usize = 3;
+/// Lowest accepted consecutive-failure threshold.
+pub const MIN_FAILURE_THRESHOLD: usize = 1;
+/// Highest accepted consecutive-failure threshold.
+pub const MAX_FAILURE_THRESHOLD: usize = 100;
 
 /// Errors from the assistance layer.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -172,6 +199,60 @@ pub enum AiError {
     RequestBudgetExhausted(usize),
 }
 
+/// A bounded circuit breaker for provider calls.
+///
+/// The breaker opens after `threshold` consecutive failures and stays open for
+/// the rest of the run. A success resets the failure count. It never changes
+/// the deterministic scan result; callers simply stop calling the provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CircuitBreaker {
+    threshold: usize,
+    consecutive_failures: usize,
+    open: bool,
+}
+
+impl CircuitBreaker {
+    /// Creates a closed breaker that opens after `threshold` failures.
+    pub fn new(threshold: usize) -> Self {
+        CircuitBreaker {
+            threshold: threshold.max(1),
+            consecutive_failures: 0,
+            open: false,
+        }
+    }
+
+    /// Whether the breaker is open (assistance disabled for this run).
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Consecutive failures observed so far.
+    pub fn consecutive_failures(&self) -> usize {
+        self.consecutive_failures
+    }
+
+    /// Configured failure threshold.
+    pub fn threshold(&self) -> usize {
+        self.threshold
+    }
+
+    /// Records a successful call, closing a still-closed breaker.
+    pub fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+    }
+
+    /// Records a failure and opens the breaker once the threshold is reached.
+    ///
+    /// Returns `true` when this failure opened (or kept open) the breaker.
+    pub fn record_failure(&mut self) -> bool {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures >= self.threshold {
+            self.open = true;
+        }
+        self.open
+    }
+}
+
 /// Bounded request budget and retry policy for provider calls.
 ///
 /// The budget is per scan and fail-closed: once exhausted, the caller continues
@@ -183,6 +264,7 @@ pub struct CallPolicy {
     max_retries: usize,
     backoff: Duration,
     max_backoff: Duration,
+    breaker: CircuitBreaker,
 }
 
 impl CallPolicy {
@@ -194,7 +276,28 @@ impl CallPolicy {
             max_retries: config.max_retries,
             backoff: Duration::from_millis(config.backoff_ms),
             max_backoff: Duration::from_millis(config.max_backoff_ms.max(config.backoff_ms)),
+            breaker: CircuitBreaker::new(config.failure_threshold),
         }
+    }
+
+    /// Whether repeated provider failures disabled assistance for this run.
+    pub fn circuit_open(&self) -> bool {
+        self.breaker.is_open()
+    }
+
+    /// Consecutive failures recorded so far.
+    pub fn consecutive_failures(&self) -> usize {
+        self.breaker.consecutive_failures()
+    }
+
+    /// Records a successful provider call, resetting the failure count.
+    pub fn record_success(&mut self) {
+        self.breaker.record_success();
+    }
+
+    /// Records a failed provider call and returns whether the circuit is open.
+    pub fn record_failure(&mut self) -> bool {
+        self.breaker.record_failure()
     }
 
     /// Attempts to consume one request slot.
@@ -235,17 +338,23 @@ impl CallPolicy {
     /// Runs `operation` with a bounded number of exponential-backoff retries.
     ///
     /// `operation` receives the 1-based attempt number. The final error is
-    /// returned once the retry budget is spent; callers must fail closed.
-    pub fn run_with_retry<T, E, F>(&self, mut operation: F) -> Result<T, E>
+    /// returned once the retry budget is spent; callers must fail closed. A
+    /// success resets the circuit breaker; an exhausted retry budget records one
+    /// failure and may open it.
+    pub fn run_with_retry<T, E, F>(&mut self, mut operation: F) -> Result<T, E>
     where
         F: FnMut(usize) -> Result<T, E>,
     {
         let mut attempt = 1;
         loop {
             match operation(attempt) {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    self.record_success();
+                    return Ok(value);
+                }
                 Err(error) => {
                     if attempt > self.max_retries {
+                        self.record_failure();
                         return Err(error);
                     }
                     std::thread::sleep(self.backoff_delay(attempt));
@@ -265,6 +374,7 @@ pub struct GuidanceSession<'a> {
     assistant: &'a dyn Assistant,
     policy: CallPolicy,
     exhausted: bool,
+    circuit_open: bool,
 }
 
 impl<'a> GuidanceSession<'a> {
@@ -274,12 +384,13 @@ impl<'a> GuidanceSession<'a> {
             assistant,
             policy: CallPolicy::from_config(config),
             exhausted: false,
+            circuit_open: false,
         }
     }
 
     /// Summarizes findings if a request slot is available.
     pub fn summarize(&mut self, findings: &[Finding]) -> Option<Explanation> {
-        self.call(|assistant| assistant.summarize(findings))
+        self.call(|assistant| Ok(assistant.summarize(findings)))
     }
 
     /// Explains one finding if a request slot is available.
@@ -288,12 +399,44 @@ impl<'a> GuidanceSession<'a> {
         finding: &Finding,
         rule: Option<&RuleMetadata>,
     ) -> Option<Explanation> {
-        self.call(|assistant| assistant.explain_finding(finding, rule))
+        self.call(|assistant| Ok(assistant.explain_finding(finding, rule)))
+    }
+
+    /// Summarizes findings through a fallible provider operation.
+    ///
+    /// A `None` result means the call was skipped because the request budget or
+    /// circuit breaker is exhausted; the scan itself continues unchanged.
+    pub fn try_summarize<F>(&mut self, operation: F) -> Option<Explanation>
+    where
+        F: FnOnce(&dyn Assistant) -> Result<Explanation, AiError>,
+    {
+        self.call(operation)
+    }
+
+    /// Explains one finding through a fallible provider operation.
+    pub fn try_explain_finding<F>(&mut self, operation: F) -> Option<Explanation>
+    where
+        F: FnOnce(&dyn Assistant) -> Result<Explanation, AiError>,
+    {
+        self.call(operation)
     }
 
     /// Whether a call was skipped because the request budget was exhausted.
     pub fn exhausted(&self) -> bool {
         self.exhausted
+    }
+
+    /// Whether repeated provider failures opened the circuit breaker.
+    ///
+    /// Once open, no further provider calls are made for this scan. The caller
+    /// should record a diagnostic and continue with the deterministic result.
+    pub fn circuit_open(&self) -> bool {
+        self.circuit_open
+    }
+
+    /// Consecutive provider failures observed so far.
+    pub fn consecutive_failures(&self) -> usize {
+        self.policy.consecutive_failures()
     }
 
     /// Requests consumed so far.
@@ -303,13 +446,28 @@ impl<'a> GuidanceSession<'a> {
 
     fn call<F>(&mut self, operation: F) -> Option<Explanation>
     where
-        F: FnOnce(&dyn Assistant) -> Explanation,
+        F: FnOnce(&dyn Assistant) -> Result<Explanation, AiError>,
     {
+        if self.circuit_open || self.policy.circuit_open() {
+            self.circuit_open = true;
+            return None;
+        }
         if self.policy.try_acquire().is_err() {
             self.exhausted = true;
             return None;
         }
-        Some(operation(self.assistant))
+        match operation(self.assistant) {
+            Ok(explanation) => {
+                self.policy.record_success();
+                Some(explanation)
+            }
+            Err(_) => {
+                if self.policy.record_failure() {
+                    self.circuit_open = true;
+                }
+                None
+            }
+        }
     }
 }
 
@@ -816,6 +974,85 @@ mod tests {
     }
 
     #[test]
+    fn circuit_opens_after_repeated_failures_and_skips_later_calls() {
+        let assistant = CountingAssistant::new();
+        let config = AiConfig {
+            enabled: true,
+            failure_threshold: 2,
+            ..AiConfig::default()
+        };
+        let mut session = GuidanceSession::new(&assistant, &config);
+
+        for _ in 0..2 {
+            let result = session.try_summarize(|_| {
+                Err(AiError::InvalidResponse("provider unavailable".to_string()))
+            });
+            assert!(result.is_none());
+        }
+
+        assert!(session.circuit_open());
+        assert_eq!(session.consecutive_failures(), 2);
+
+        // Once open, later operations are skipped entirely.
+        let skipped = session
+            .try_summarize(|_| panic!("provider must not be called after the circuit opens"));
+        assert!(skipped.is_none());
+        assert_eq!(assistant.calls(), 0);
+    }
+
+    #[test]
+    fn a_success_resets_the_failure_counter() {
+        let assistant = CountingAssistant::new();
+        let config = AiConfig {
+            enabled: true,
+            failure_threshold: 2,
+            ..AiConfig::default()
+        };
+        let mut session = GuidanceSession::new(&assistant, &config);
+
+        assert!(session
+            .try_summarize(|_| Err(AiError::InvalidResponse("first".to_string())))
+            .is_none());
+        assert!(session.summarize(&[finding()]).is_some());
+        assert!(!session.circuit_open());
+        assert_eq!(session.consecutive_failures(), 0);
+
+        assert!(session
+            .try_summarize(|_| Err(AiError::InvalidResponse("second".to_string())))
+            .is_none());
+        assert!(!session.circuit_open());
+        assert!(session
+            .try_summarize(|_| Err(AiError::InvalidResponse("third".to_string())))
+            .is_none());
+        assert!(session.circuit_open());
+    }
+
+    #[test]
+    fn failure_threshold_is_validated() {
+        assert!(AiConfig {
+            failure_threshold: MIN_FAILURE_THRESHOLD,
+            ..AiConfig::default()
+        }
+        .validate()
+        .is_ok());
+        assert!(AiConfig {
+            failure_threshold: MAX_FAILURE_THRESHOLD,
+            ..AiConfig::default()
+        }
+        .validate()
+        .is_ok());
+        for value in [0, MAX_FAILURE_THRESHOLD + 1] {
+            let error = AiConfig {
+                failure_threshold: value,
+                ..AiConfig::default()
+            }
+            .validate()
+            .unwrap_err();
+            assert!(matches!(error, AiConfigError::FailureThreshold { .. }));
+        }
+    }
+
+    #[test]
     fn backoff_is_exponential_and_capped() {
         let config = AiConfig {
             backoff_ms: 100,
@@ -837,7 +1074,7 @@ mod tests {
             max_backoff_ms: 2,
             ..AiConfig::default()
         };
-        let policy = CallPolicy::from_config(&config);
+        let mut policy = CallPolicy::from_config(&config);
         let attempts = std::sync::atomic::AtomicUsize::new(0);
         let result: Result<&str, &str> = policy.run_with_retry(|attempt| {
             attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

@@ -91,6 +91,8 @@ max_output_tokens = 1024
 # max_retries = 2
 # backoff_ms = 250
 # max_backoff_ms = 4000
+# Consecutive provider failures before assistance is disabled for the run.
+# failure_threshold = 3
 ```
 
 ### Fields
@@ -119,6 +121,7 @@ max_output_tokens = 1024
 | `ai.max_retries` | integer | `2` | Bounded retries per provider request. |
 | `ai.backoff_ms` | integer | `250` | Base exponential backoff delay. |
 | `ai.max_backoff_ms` | integer | `4000` | Maximum single backoff delay. |
+| `ai.failure_threshold` | integer | `3` | Consecutive provider failures before assistance is disabled for the rest of the run (`1`–`100`). The scan still completes and emits `AI-002`. |
 
 Unknown fields and category names are rejected. An unknown rule id in
 `disabled` or `enabled` is a usage error. An override that targets an unknown or
