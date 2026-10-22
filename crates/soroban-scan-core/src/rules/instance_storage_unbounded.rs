@@ -9,7 +9,10 @@ use crate::finding::Finding;
 use crate::rule::{Rule, RuleMetadata};
 use crate::severity::Severity;
 
-use super::util::{contract_entry_functions, facts_from_block, location_for};
+use super::util::{
+    contract_entry_functions, facts_from_block_with_imports, location_for, CallFact,
+};
+use crate::source::ParsedSource;
 
 /// Rule metadata.
 pub const METADATA: RuleMetadata = RuleMetadata {
@@ -47,21 +50,32 @@ impl Rule for InstanceStorageForUnboundedData {
                 if !func.is_public {
                     continue;
                 }
-                let facts = facts_from_block(func.block);
-                let instance_sets: Vec<_> = facts
-                    .storage_mutations()
-                    .into_iter()
-                    .filter(|call| {
-                        call.name == "set" && call.context.to_ascii_lowercase().contains("instance")
-                    })
-                    .collect();
+                let facts = facts_from_block_with_imports(func.block, &source.imports);
+                let mut instance_sets: Vec<(&CallFact, Option<&str>)> = Vec::new();
+                for call in &facts.method_calls {
+                    if call.name == "set" && is_instance(source, &call.context) {
+                        instance_sets.push((call, call.args.first().map(String::as_str)));
+                    }
+                }
+                // UFCS calls (`Store::set(&store, key, value)`) carry the
+                // storage handle as their first argument, so the key is the
+                // penultimate one.
+                for call in &facts.function_calls {
+                    if call.name == "set" && is_instance(source, &call.context) {
+                        let key = call
+                            .args
+                            .len()
+                            .checked_sub(2)
+                            .and_then(|index| call.args.get(index))
+                            .map(String::as_str);
+                        instance_sets.push((call, key));
+                    }
+                }
 
-                let distinct_keys: BTreeSet<&str> = instance_sets
-                    .iter()
-                    .filter_map(|call| call.args.first().map(String::as_str))
-                    .collect();
+                let distinct_keys: BTreeSet<&str> =
+                    instance_sets.iter().filter_map(|(_, key)| *key).collect();
                 if instance_sets.len() >= 2 && distinct_keys.len() >= 2 {
-                    for call in instance_sets {
+                    for (call, _) in instance_sets {
                         let location = location_for(ctx, source, call.line, call.column);
                         let evidence = format!(
                             "repeated instance-storage keys in `{}`: {}",
@@ -72,9 +86,11 @@ impl Rule for InstanceStorageForUnboundedData {
                     continue;
                 }
 
-                let reads_instance = facts.method_calls.iter().any(|call| {
-                    call.name == "get" && call.context.to_ascii_lowercase().contains("instance")
-                });
+                let reads_instance = facts
+                    .method_calls
+                    .iter()
+                    .chain(facts.function_calls.iter())
+                    .any(|call| call.name == "get" && is_instance(source, &call.context));
                 if !reads_instance {
                     continue;
                 }
@@ -91,6 +107,19 @@ impl Rule for InstanceStorageForUnboundedData {
             }
         }
     }
+}
+
+/// Whether a rendered call context resolves to instance storage.
+///
+/// The import map is consulted explicitly so aliases and glob imports are
+/// canonicalized instead of compared as literal text.
+fn is_instance(source: &ParsedSource, context: &str) -> bool {
+    if context.to_ascii_lowercase().contains("instance") {
+        return true;
+    }
+    source
+        .resolve_path(context)
+        .any_candidate(|path| path.to_ascii_lowercase().contains("instance"))
 }
 
 #[cfg(test)]
@@ -141,6 +170,66 @@ mod tests {
                 pub fn configure(env: Env, a: u32, b: u32) {
                     env.storage().persistent().set(&DataKey::A, &a);
                     env.storage().persistent().set(&DataKey::B, &b);
+                }
+            }
+            "#,
+            Box::new(InstanceStorageForUnboundedData),
+        );
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn flags_aliased_instance_storage_calls() {
+        let findings = scan_rule(
+            r#"
+            use soroban_sdk::storage::Instance as Store;
+
+            #[contractimpl]
+            impl C {
+                pub fn configure(env: Env, a: u32, b: u32) {
+                    let store = env.storage().instance();
+                    Store::set(&store, &DataKey::A, &a);
+                    Store::set(&store, &DataKey::B, &b);
+                }
+            }
+            "#,
+            Box::new(InstanceStorageForUnboundedData),
+        );
+        assert_eq!(findings.len(), 2);
+    }
+
+    #[test]
+    fn flags_glob_imported_instance_storage_calls() {
+        let findings = scan_rule(
+            r#"
+            use soroban_sdk::storage::*;
+
+            #[contractimpl]
+            impl C {
+                pub fn configure(env: Env, a: u32, b: u32) {
+                    let store = env.storage().instance();
+                    Instance::set(&store, &DataKey::A, &a);
+                    Instance::set(&store, &DataKey::B, &b);
+                }
+            }
+            "#,
+            Box::new(InstanceStorageForUnboundedData),
+        );
+        assert_eq!(findings.len(), 2);
+    }
+
+    #[test]
+    fn does_not_flag_an_alias_to_persistent_storage() {
+        let findings = scan_rule(
+            r#"
+            use soroban_sdk::storage::Persistent as Store;
+
+            #[contractimpl]
+            impl C {
+                pub fn configure(env: Env, a: u32, b: u32) {
+                    let store = env.storage().persistent();
+                    Store::set(&store, &DataKey::A, &a);
+                    Store::set(&store, &DataKey::B, &b);
                 }
             }
             "#,

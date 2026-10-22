@@ -75,7 +75,8 @@ pipeline: `config` feeds discovery/engine/report, `source` feeds `project` and
 | `config` | Layered `ScanConfig` and validation; repository config is untrusted input. | `ai`, `category`, `confidence`, `severity`. |
 | `manifest` | Syntactic `Cargo.toml` parsing (no execution or fetching). | `error`, `model`. |
 | `discovery` | Deterministic, symlink-safe filesystem traversal and exclude globs. | `error`. |
-| `source` | `syn` parsing, spans, module paths, crate-root membership, contract evidence, suppressions. | `error`, `model`, `soroban`. |
+| `source` | `syn` parsing, spans, module paths, crate-root membership, contract evidence, suppressions. | `error`, `imports`, `model`, `soroban`. |
+| `imports` | Best-effort per-file `use` import map and path canonicalization. | Nothing in the crate. |
 | `project` | Orchestrates discovery, manifest loading, source parsing, and Soroban classification. | `discovery`, `error`, `manifest`, `model`, `soroban`, `source`. |
 | `soroban` | Soroban evidence and project classification; never executes contracts. | `model`. |
 | `context` | Immutable `AnalysisContext` passed to rules. | `model`, `source`. |
