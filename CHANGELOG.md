@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The documentation link checker now also validates reference-style links and
+  their definitions, and is covered by unit tests (`#28`).
 - Rule panics are isolated per invocation (`RULE-004`), other rules continue,
   and a regression test now proves findings from healthy rules survive (`#103`).
 - Rules now execute in ascending rule-id order, so diagnostics and per-rule
