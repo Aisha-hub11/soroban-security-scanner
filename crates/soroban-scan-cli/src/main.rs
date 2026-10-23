@@ -795,9 +795,19 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
     }
 
     if args.guidance {
-        let base = ai::assistant(&config.ai).map_err(|e| {
-            CliError::Usage(format!("assistance is unavailable: {e} (see docs/ai.md)"))
-        })?;
+        // Assistance is advisory: a configured provider that is unavailable in
+        // this build must never change the deterministic scan or its exit code.
+        // Fall back to the offline, rule-based guidance and say so on stderr.
+        let base = match ai::assistant(&config.ai) {
+            Ok(base) => base,
+            Err(error) => {
+                eprintln!(
+                    "warning: assistance is unavailable: {error}; \
+                     continuing with offline guidance"
+                );
+                ai::RuleGuidance
+            }
+        };
         let provider = config
             .ai
             .provider

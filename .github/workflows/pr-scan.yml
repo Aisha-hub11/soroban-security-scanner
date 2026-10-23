@@ -38,7 +38,26 @@ jobs:
           # The repository's own fixtures and examples are intentionally
           # vulnerable test data, not production code: exclude them so they do
           # not raise code-scanning alerts for every detector change.
-          git diff --name-only --diff-filter=ACMR "${base}...HEAD" -- '*.rs' \
+          #
+          # `--diff-filter=ACMR` drops deletions while keeping added, copied,
+          # modified, and renamed-to paths (rename detection is `-M`). A rename
+          # therefore contributes its destination path only. The loop then
+          # verifies each remaining path exists as a regular file (not a
+          # submodule/symlink) and ends in `.rs` before scanning, so a stale or
+          # missing path can never produce a false "clean" result (#165).
+          git diff -M --name-only --diff-filter=ACMR -z "${base}...HEAD" -- '*.rs' \
+            | while IFS= read -r -d '' path; do
+                if [ ! -f "$path" ] || [ -L "$path" ]; then
+                  continue
+                fi
+                # Submodules are index entries with mode 160000; never scan them.
+                if git ls-files -s -- "$path" | grep -q '^160000 '; then
+                  continue
+                fi
+                case "$path" in
+                  *.rs) printf '%s\n' "$path" ;;
+                esac
+              done \
             | sed '/^$/d' \
             | grep -v -E '^(fixtures|examples)/' \
             > changed.txt || true
