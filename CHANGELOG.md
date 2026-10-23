@@ -64,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A dependency-boundary test now pins the documented crate and module
   directions, including `core` never depending on `cli` and `report` consuming
   `engine` without the reverse edge (`#76`).
+- Golden JSON and SARIF snapshots now pin the machine-readable reports for the
+  full regression corpus, with a documented update procedure (`#66`).
 - Add an editor integration (LSP) spike covering a minimal diagnostics provider,
   core-library reuse, protocol scope, security, testing, and follow-up tasks
   (`#168`).
