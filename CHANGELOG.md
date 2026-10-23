@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SS-033 "Wildcard import from the Soroban SDK" (low/high): flags
+  `use soroban_sdk::*` and nested SDK globs, with documentation and fixtures
+  (`#132`).
 - Add an editor integration (LSP) spike covering a minimal diagnostics provider,
   core-library reuse, protocol scope, security, testing, and follow-up tasks
   (`#168`).

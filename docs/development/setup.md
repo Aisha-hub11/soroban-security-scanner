@@ -4,6 +4,8 @@
 
 - **Rust** (recent stable; CI builds and tests on stable).
 - **Git**.
+- Optional: [`just`](https://github.com/casey/just#installation) for the task
+  runner described below.
 - Optional: **Python 3.10+** for supporting tooling under `tools/`.
 
 Check your toolchain:
@@ -54,12 +56,34 @@ cargo xtask --help
 
 ## Local quality gate
 
-Run everything CI runs:
+The repository ships a [`justfile`](../../justfile) so one command runs the same
+gate as CI:
+
+```bash
+just check
+```
+
+The recipes are thin wrappers over cargo/xtask:
+
+| Recipe | Runs |
+| ------ | ---- |
+| `just fmt` | `cargo fmt --all` |
+| `just fmt-check` | `cargo fmt --all -- --check` |
+| `just lint` | `cargo clippy --all-targets --all-features -- -D warnings` |
+| `just test` | `cargo test --all --all-features` |
+| `just docs` | `cargo xtask docs` |
+| `just bench` | the in-process benchmark example |
+| `just deny` | `cargo deny check` (requires `cargo-deny`) |
+| `just check` | `fmt-check`, `lint`, `test`, and `docs` |
+| `just ci` | `check` plus `deny` |
+
+Without `just`, run the underlying commands directly:
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all
+cargo test --all --all-features
+cargo xtask docs
 ```
 
 ## Formatting

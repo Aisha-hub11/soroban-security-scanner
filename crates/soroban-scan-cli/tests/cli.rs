@@ -1023,7 +1023,7 @@ fn guidance_request_budget_is_enforced_and_scan_completes() {
 }
 
 #[test]
-fn enabling_ai_without_a_provider_fails_closed() {
+fn enabling_ai_without_a_provider_falls_back_to_offline_guidance() {
     let dir = std::env::temp_dir().join(format!("soroban-scan-cli-ai-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1040,8 +1040,52 @@ fn enabling_ai_without_a_provider_fails_closed() {
         "--quiet",
         "--guidance",
     ]);
-    assert_eq!(out.code, 2);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert!(out.stderr.contains("assistance is unavailable"));
+    assert!(out.stderr.contains("GUIDANCE (offline, rule-based)"));
+    assert!(out.stderr.contains("SS-001"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deterministic_scan_is_unchanged_by_ai_configuration() {
+    // The fixture has findings, so the high gate fails with exit code 1.
+    let baseline = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "high",
+    ]);
+    assert_eq!(baseline.code, 1, "stderr: {}", baseline.stderr);
+
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-ai-off-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("ai.toml");
+    std::fs::write(&config, "[ai]\nenabled = true\nprovider = \"openai\"\n").unwrap();
+
+    // Enabling an unavailable provider must not alter findings or the exit code.
+    let enabled = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "high",
+    ]);
+    assert_eq!(enabled.code, baseline.code, "stderr: {}", enabled.stderr);
+    let baseline_json: serde_json::Value = serde_json::from_str(&baseline.stdout).unwrap();
+    let enabled_json: serde_json::Value = serde_json::from_str(&enabled.stdout).unwrap();
+    assert_eq!(enabled_json["findings"], baseline_json["findings"]);
+    assert_eq!(
+        enabled_json["stats"]["findings_raw"],
+        baseline_json["stats"]["findings_raw"]
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

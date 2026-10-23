@@ -107,6 +107,7 @@ tests, and documentation under `docs/rules/detectors/`:
 - [x] SS-016 Unbounded data stored in instance storage (medium/low).
 - [x] SS-017 Authorization after state mutation (medium/medium).
 - [x] SS-029 Public test or debug hook in a contract entry point (medium/medium).
+- [x] SS-033 Wildcard import from the Soroban SDK (low/high).
 
 Supporting work:
 

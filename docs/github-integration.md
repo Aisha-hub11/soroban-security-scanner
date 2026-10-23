@@ -215,13 +215,44 @@ and
 workflow limits work to changed Rust files:
 
 ```bash
-git diff --name-only --diff-filter=ACMR origin/main...HEAD -- '*.rs' > changed.txt
+git diff -M --name-only --diff-filter=ACMR origin/main...HEAD -- '*.rs' > changed.txt
 soroban-scan scan . --files-from changed.txt --baseline .baseline.json --incremental
 ```
 
 Use `--incremental` so the scanner does not report resolved findings, which
 cannot be determined from a partial scan. `--files-from` rejects `..` entries
 that would escape the scan root.
+
+The PR workflow applies four edge-case guards before scanning:
+
+- `--diff-filter=ACMR` excludes deleted paths, and `-M` keeps only the
+  destination of a rename. A pure rename therefore scans the new path once.
+- Every listed path must still exist as a regular file. A stale path from a
+  force-push or a path that disappeared between checkout and diff is skipped.
+- Symlinks and submodule index entries (`git ls-files -s` mode `160000`) are
+  skipped, so a submodule path is never treated as Rust source.
+- Only paths ending in `.rs` are written to `changed.txt`; duplicates are
+  avoided by the diff itself.
+
+Manual verification (documented for reviewers):
+
+```bash
+# 1. Rename a tracked Rust file and confirm only the new path is listed.
+git mv crates/soroban-scan-core/src/rules/unsafe_code.rs /tmp/renamed.rs
+git mv /tmp/renamed.rs crates/soroban-scan-core/src/rules/unsafe_code_renamed.rs
+git commit -m "temp: rename"
+git diff -M --name-only --diff-filter=ACMR origin/main...HEAD -- '*.rs'
+# Expect .../unsafe_code_renamed.rs and not .../unsafe_code.rs.
+
+# 2. Delete a tracked Rust file and confirm it is absent from changed.txt.
+git rm crates/soroban-scan-core/src/rules/unsafe_code_renamed.rs
+git commit -m "temp: delete"
+git diff -M --name-only --diff-filter=ACMR origin/main~1...HEAD -- '*.rs'
+# Expect no deleted path in the output.
+```
+
+Both cases leave `changed.txt` deterministic: deletes never reach the scanner,
+and renames never scan the old, missing path.
 
 ## PR annotations
 
