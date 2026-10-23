@@ -8,17 +8,17 @@
   "project": {
     "root": "fixtures/corpus",
     "kind": "confirmed_soroban",
-    "source_files": 68,
+    "source_files": 74,
     "soroban_sdk_versions": []
   },
   "stats": {
-    "files_analyzed": 68,
-    "files_parsed": 68,
+    "files_analyzed": 74,
+    "files_parsed": 74,
     "files_failed": 0,
     "files_skipped": 0,
-    "rules_run": 18,
+    "rules_run": 19,
     "rules_skipped": 0,
-    "findings_raw": 128,
+    "findings_raw": 134,
     "findings_rejected": 0,
     "suppressions_detected": 0,
     "findings_suppressed": 0,
@@ -34,10 +34,11 @@
       "authorization": 28,
       "configuration": 2,
       "cross-contract": 6,
+      "dependencies": 2,
       "error-handling": 11,
       "events": 13,
       "resource-usage": 2,
-      "storage": 38,
+      "storage": 42,
       "token": 11,
       "unsafe": 1
     }
@@ -2423,6 +2424,102 @@
       "fingerprint": "28e8764093d6d631285f4c302b420684"
     },
     {
+      "rule_id": "SS-016",
+      "title": "Unbounded data stored in instance storage",
+      "description": "Instance storage is loaded for every invocation and has strict size limits. Writing repeated distinct keys, or growing a collection, in instance storage increases the cost of every call and can break the contract at scale. Constant configuration is a better fit for instance storage.",
+      "severity": "medium",
+      "confidence": "low",
+      "category": "storage",
+      "location": {
+        "file": "SS-016/positive_alias.rs",
+        "line": 14,
+        "column": 9
+      },
+      "evidence": "repeated instance-storage keys in `configure`: Store :: set (& store , & DataKey :: A , & a)",
+      "remediation": "Keep instance storage for small, fixed configuration. Store growing collections in persistent storage, and bound their size explicitly.",
+      "references": [
+        "https://developers.stellar.org/docs/learn/encyclopedia/storage/persisting-data"
+      ],
+      "fingerprint": "c1573001211f3f31be54d9a213076072"
+    },
+    {
+      "rule_id": "SS-016",
+      "title": "Unbounded data stored in instance storage",
+      "description": "Instance storage is loaded for every invocation and has strict size limits. Writing repeated distinct keys, or growing a collection, in instance storage increases the cost of every call and can break the contract at scale. Constant configuration is a better fit for instance storage.",
+      "severity": "medium",
+      "confidence": "low",
+      "category": "storage",
+      "location": {
+        "file": "SS-016/positive_alias.rs",
+        "line": 15,
+        "column": 9
+      },
+      "evidence": "repeated instance-storage keys in `configure`: Store :: set (& store , & DataKey :: B , & b)",
+      "remediation": "Keep instance storage for small, fixed configuration. Store growing collections in persistent storage, and bound their size explicitly.",
+      "references": [
+        "https://developers.stellar.org/docs/learn/encyclopedia/storage/persisting-data"
+      ],
+      "fingerprint": "6210cd5ef760da258b50ec6a1c4575fc"
+    },
+    {
+      "rule_id": "SS-033",
+      "title": "Wildcard import from the Soroban SDK",
+      "description": "A source file imports everything from `soroban_sdk` with a glob (`use soroban_sdk::*;` or a nested glob). Wildcard imports obscure which SDK items are used and can silently include deprecated or unsafe APIs when the SDK changes. This is a readability and reviewability signal, not proof of a security defect.",
+      "severity": "low",
+      "confidence": "high",
+      "category": "dependencies",
+      "location": {
+        "file": "SS-016/positive_glob.rs",
+        "line": 6,
+        "column": 0
+      },
+      "evidence": "wildcard import `use soroban_sdk::storage::*` hides which Soroban SDK items are used",
+      "remediation": "Replace the glob with the specific `soroban_sdk` items the contract uses (for example `use soroban_sdk::{Address, Env};`). Nested module imports should likewise name each item instead of ending in `*`.",
+      "references": [
+        "https://doc.rust-lang.org/book/ch07-04-bringing-paths-into-scope-with-the-use-keyword.html",
+        "https://developers.stellar.org/docs"
+      ],
+      "fingerprint": "c950c49eb8ceba2edc0b1c4bd430e68c"
+    },
+    {
+      "rule_id": "SS-016",
+      "title": "Unbounded data stored in instance storage",
+      "description": "Instance storage is loaded for every invocation and has strict size limits. Writing repeated distinct keys, or growing a collection, in instance storage increases the cost of every call and can break the contract at scale. Constant configuration is a better fit for instance storage.",
+      "severity": "medium",
+      "confidence": "low",
+      "category": "storage",
+      "location": {
+        "file": "SS-016/positive_glob.rs",
+        "line": 14,
+        "column": 9
+      },
+      "evidence": "repeated instance-storage keys in `configure`: Instance :: set (& store , & DataKey :: A , & a)",
+      "remediation": "Keep instance storage for small, fixed configuration. Store growing collections in persistent storage, and bound their size explicitly.",
+      "references": [
+        "https://developers.stellar.org/docs/learn/encyclopedia/storage/persisting-data"
+      ],
+      "fingerprint": "878a1181fd5de08fedc6865d935505a3"
+    },
+    {
+      "rule_id": "SS-016",
+      "title": "Unbounded data stored in instance storage",
+      "description": "Instance storage is loaded for every invocation and has strict size limits. Writing repeated distinct keys, or growing a collection, in instance storage increases the cost of every call and can break the contract at scale. Constant configuration is a better fit for instance storage.",
+      "severity": "medium",
+      "confidence": "low",
+      "category": "storage",
+      "location": {
+        "file": "SS-016/positive_glob.rs",
+        "line": 15,
+        "column": 9
+      },
+      "evidence": "repeated instance-storage keys in `configure`: Instance :: set (& store , & DataKey :: B , & b)",
+      "remediation": "Keep instance storage for small, fixed configuration. Store growing collections in persistent storage, and bound their size explicitly.",
+      "references": [
+        "https://developers.stellar.org/docs/learn/encyclopedia/storage/persisting-data"
+      ],
+      "fingerprint": "ea636b251be8712c2c15f747eb5151ee"
+    },
+    {
       "rule_id": "SS-006",
       "title": "Persistent storage write without TTL management",
       "description": "A contract entry point writes to persistent storage but does not call `extend_ttl`, `set_ttl`, or `bump` in the same function or in the intra-file helpers it calls. Persistent entries have a time-to-live; if it is not extended, stored data can expire and be lost. TTL may legitimately be managed elsewhere (for example in a separate maintenance entry point), so this is a low-confidence signal.",
@@ -2535,6 +2632,26 @@
         "https://developers.stellar.org/docs/learn/encyclopedia/security"
       ],
       "fingerprint": "c2c7192fdfffc7b7c5fc6951261f5cb4"
+    },
+    {
+      "rule_id": "SS-033",
+      "title": "Wildcard import from the Soroban SDK",
+      "description": "A source file imports everything from `soroban_sdk` with a glob (`use soroban_sdk::*;` or a nested glob). Wildcard imports obscure which SDK items are used and can silently include deprecated or unsafe APIs when the SDK changes. This is a readability and reviewability signal, not proof of a security defect.",
+      "severity": "low",
+      "confidence": "high",
+      "category": "dependencies",
+      "location": {
+        "file": "SS-033/positive.rs",
+        "line": 2,
+        "column": 0
+      },
+      "evidence": "wildcard import `use soroban_sdk::*` hides which Soroban SDK items are used",
+      "remediation": "Replace the glob with the specific `soroban_sdk` items the contract uses (for example `use soroban_sdk::{Address, Env};`). Nested module imports should likewise name each item instead of ending in `*`.",
+      "references": [
+        "https://doc.rust-lang.org/book/ch07-04-bringing-paths-into-scope-with-the-use-keyword.html",
+        "https://developers.stellar.org/docs"
+      ],
+      "fingerprint": "f3f0a4aadf0de5b0abe020564befef9a"
     }
   ],
   "suppressed": [],
@@ -2665,6 +2782,27 @@
       "level": "info",
       "message": "1 macro invocation(s) were not expanded: panic",
       "path": "SS-014/negative3.rs",
+      "line": null
+    },
+    {
+      "code": "MACRO-001",
+      "level": "info",
+      "message": "1 macro invocation(s) were not expanded: symbol_short",
+      "path": "SS-033/negative.rs",
+      "line": null
+    },
+    {
+      "code": "MACRO-001",
+      "level": "info",
+      "message": "1 macro invocation(s) were not expanded: symbol_short",
+      "path": "SS-033/negative2.rs",
+      "line": null
+    },
+    {
+      "code": "MACRO-001",
+      "level": "info",
+      "message": "1 macro invocation(s) were not expanded: symbol_short",
+      "path": "SS-033/positive.rs",
       "line": null
     }
   ]

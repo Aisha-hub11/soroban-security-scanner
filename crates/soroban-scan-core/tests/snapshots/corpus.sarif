@@ -3542,6 +3542,151 @@
           "ruleId": "SS-016"
         },
         {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "SS-016/positive_alias.rs"
+                },
+                "region": {
+                  "startColumn": 9,
+                  "startLine": 14
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Unbounded data stored in instance storage — repeated instance-storage keys in `configure`: Store :: set (& store , & DataKey :: A , & a)"
+          },
+          "partialFingerprints": {
+            "sorobanScanFingerprint": "c1573001211f3f31be54d9a213076072"
+          },
+          "properties": {
+            "category": "storage",
+            "confidence": "low",
+            "remediation": "Keep instance storage for small, fixed configuration. Store growing collections in persistent storage, and bound their size explicitly.",
+            "severity": "medium"
+          },
+          "ruleId": "SS-016"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "SS-016/positive_alias.rs"
+                },
+                "region": {
+                  "startColumn": 9,
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Unbounded data stored in instance storage — repeated instance-storage keys in `configure`: Store :: set (& store , & DataKey :: B , & b)"
+          },
+          "partialFingerprints": {
+            "sorobanScanFingerprint": "6210cd5ef760da258b50ec6a1c4575fc"
+          },
+          "properties": {
+            "category": "storage",
+            "confidence": "low",
+            "remediation": "Keep instance storage for small, fixed configuration. Store growing collections in persistent storage, and bound their size explicitly.",
+            "severity": "medium"
+          },
+          "ruleId": "SS-016"
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "SS-016/positive_glob.rs"
+                },
+                "region": {
+                  "startColumn": 0,
+                  "startLine": 6
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Wildcard import from the Soroban SDK — wildcard import `use soroban_sdk::storage::*` hides which Soroban SDK items are used"
+          },
+          "partialFingerprints": {
+            "sorobanScanFingerprint": "c950c49eb8ceba2edc0b1c4bd430e68c"
+          },
+          "properties": {
+            "category": "dependencies",
+            "confidence": "high",
+            "remediation": "Replace the glob with the specific `soroban_sdk` items the contract uses (for example `use soroban_sdk::{Address, Env};`). Nested module imports should likewise name each item instead of ending in `*`.",
+            "severity": "low"
+          },
+          "ruleId": "SS-033"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "SS-016/positive_glob.rs"
+                },
+                "region": {
+                  "startColumn": 9,
+                  "startLine": 14
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Unbounded data stored in instance storage — repeated instance-storage keys in `configure`: Instance :: set (& store , & DataKey :: A , & a)"
+          },
+          "partialFingerprints": {
+            "sorobanScanFingerprint": "878a1181fd5de08fedc6865d935505a3"
+          },
+          "properties": {
+            "category": "storage",
+            "confidence": "low",
+            "remediation": "Keep instance storage for small, fixed configuration. Store growing collections in persistent storage, and bound their size explicitly.",
+            "severity": "medium"
+          },
+          "ruleId": "SS-016"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "SS-016/positive_glob.rs"
+                },
+                "region": {
+                  "startColumn": 9,
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Unbounded data stored in instance storage — repeated instance-storage keys in `configure`: Instance :: set (& store , & DataKey :: B , & b)"
+          },
+          "partialFingerprints": {
+            "sorobanScanFingerprint": "ea636b251be8712c2c15f747eb5151ee"
+          },
+          "properties": {
+            "category": "storage",
+            "confidence": "low",
+            "remediation": "Keep instance storage for small, fixed configuration. Store growing collections in persistent storage, and bound their size explicitly.",
+            "severity": "medium"
+          },
+          "ruleId": "SS-016"
+        },
+        {
           "level": "note",
           "locations": [
             {
@@ -3714,6 +3859,35 @@
             "severity": "medium"
           },
           "ruleId": "SS-029"
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "SS-033/positive.rs"
+                },
+                "region": {
+                  "startColumn": 0,
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Wildcard import from the Soroban SDK — wildcard import `use soroban_sdk::*` hides which Soroban SDK items are used"
+          },
+          "partialFingerprints": {
+            "sorobanScanFingerprint": "f3f0a4aadf0de5b0abe020564befef9a"
+          },
+          "properties": {
+            "category": "dependencies",
+            "confidence": "high",
+            "remediation": "Replace the glob with the specific `soroban_sdk` items the contract uses (for example `use soroban_sdk::{Address, Env};`). Nested module imports should likewise name each item instead of ending in `*`.",
+            "severity": "low"
+          },
+          "ruleId": "SS-033"
         }
       ],
       "tool": {
@@ -4212,6 +4386,34 @@
               },
               "shortDescription": {
                 "text": "Public test or debug hook in a contract entry point"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "A source file imports everything from `soroban_sdk` with a glob (`use soroban_sdk::*;` or a nested glob). Wildcard imports obscure which SDK items are used and can silently include deprecated or unsafe APIs when the SDK changes. This is a readability and reviewability signal, not proof of a security defect."
+              },
+              "help": {
+                "markdown": "## Wildcard import from the Soroban SDK\n\nA source file imports everything from `soroban_sdk` with a glob (`use soroban_sdk::*;` or a nested glob). Wildcard imports obscure which SDK items are used and can silently include deprecated or unsafe APIs when the SDK changes. This is a readability and reviewability signal, not proof of a security defect.\n\n### Remediation\n\nReplace the glob with the specific `soroban_sdk` items the contract uses (for example `use soroban_sdk::{Address, Env};`). Nested module imports should likewise name each item instead of ending in `*`.\n\n### References\n\n- https://doc.rust-lang.org/book/ch07-04-bringing-paths-into-scope-with-the-use-keyword.html\n- https://developers.stellar.org/docs",
+                "text": "A source file imports everything from `soroban_sdk` with a glob (`use soroban_sdk::*;` or a nested glob). Wildcard imports obscure which SDK items are used and can silently include deprecated or unsafe APIs when the SDK changes. This is a readability and reviewability signal, not proof of a security defect.\n\nRemediation: Replace the glob with the specific `soroban_sdk` items the contract uses (for example `use soroban_sdk::{Address, Env};`). Nested module imports should likewise name each item instead of ending in `*`."
+              },
+              "helpUri": "https://doc.rust-lang.org/book/ch07-04-bringing-paths-into-scope-with-the-use-keyword.html",
+              "id": "SS-033",
+              "name": "Wildcard import from the Soroban SDK",
+              "properties": {
+                "category": "dependencies",
+                "confidence": "high",
+                "references": [
+                  "https://doc.rust-lang.org/book/ch07-04-bringing-paths-into-scope-with-the-use-keyword.html",
+                  "https://developers.stellar.org/docs"
+                ],
+                "remediation": "Replace the glob with the specific `soroban_sdk` items the contract uses (for example `use soroban_sdk::{Address, Env};`). Nested module imports should likewise name each item instead of ending in `*`.",
+                "severity": "low"
+              },
+              "shortDescription": {
+                "text": "Wildcard import from the Soroban SDK"
               }
             }
           ],
