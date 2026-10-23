@@ -7,7 +7,7 @@ use crate::finding::Finding;
 use crate::rule::{Rule, RuleMetadata};
 use crate::severity::Severity;
 
-use super::util::{contract_entry_functions, facts_from_block, location_for};
+use super::util::{contract_entry_functions, facts_from_block_with_imports, location_for};
 
 /// Rule metadata.
 pub const METADATA: RuleMetadata = RuleMetadata {
@@ -54,7 +54,7 @@ impl Rule for CrossContractBeforeStateUpdate {
                     continue;
                 }
 
-                let facts = facts_from_block(func.block);
+                let facts = facts_from_block_with_imports(func.block, &source.imports);
                 let Some(first_write) = facts
                     .storage_mutations()
                     .into_iter()

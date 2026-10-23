@@ -12,6 +12,7 @@ use syn::visit::{self, Visit};
 
 use crate::context::AnalysisContext;
 use crate::finding::SourceLocation;
+use crate::imports::ImportMap;
 use crate::soroban::{self, ContractAttrStrength};
 use crate::source::{attribute_path, ParsedSource};
 
@@ -247,13 +248,26 @@ impl Facts {
     }
 }
 
-#[derive(Default)]
-struct FactsVisitor {
+struct FactsVisitor<'a> {
     facts: Facts,
+    imports: &'a ImportMap,
     unsafe_depth: usize,
     client_vars: BTreeSet<String>,
     current_macro: Option<String>,
     current_constructor: Option<String>,
+}
+
+impl<'a> FactsVisitor<'a> {
+    fn new(imports: &'a ImportMap) -> Self {
+        FactsVisitor {
+            facts: Facts::default(),
+            imports,
+            unsafe_depth: 0,
+            client_vars: BTreeSet::new(),
+            current_macro: None,
+            current_constructor: None,
+        }
+    }
 }
 
 fn span_line_col<T: Spanned>(node: &T) -> (usize, usize) {
@@ -288,7 +302,7 @@ fn render_args(
     (rendered, positions)
 }
 
-impl<'ast> Visit<'ast> for FactsVisitor {
+impl<'ast, 'a> Visit<'ast> for FactsVisitor<'a> {
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         let (line, column) = span_line_col(node);
         let span = node.span().byte_range();
@@ -304,7 +318,9 @@ impl<'ast> Visit<'ast> for FactsVisitor {
         let (args, arg_positions) = render_args(&node.args);
         let fact = CallFact {
             name: node.method.to_string(),
-            context: node.receiver.to_token_stream().to_string(),
+            context: self
+                .imports
+                .canonicalize(&node.receiver.to_token_stream().to_string()),
             line,
             column,
             start_byte: span.start,
@@ -331,7 +347,9 @@ impl<'ast> Visit<'ast> for FactsVisitor {
                         .last()
                         .map(|segment| segment.ident.to_string())
                         .unwrap_or_default();
-                    let context = path.path.to_token_stream().to_string();
+                    let context = self
+                        .imports
+                        .canonicalize(&path.path.to_token_stream().to_string());
                     if name == "new" && context.contains("Client") {
                         self.client_vars.insert(pattern.ident.to_string());
                     }
@@ -357,13 +375,15 @@ impl<'ast> Visit<'ast> for FactsVisitor {
                 .unwrap_or_default();
             let span = node.span().byte_range();
             let (args, arg_positions) = render_args(&node.args);
-            let context = path.path.to_token_stream().to_string();
+            let context = self
+                .imports
+                .canonicalize(&path.path.to_token_stream().to_string());
             if name == "new" && context.contains("Symbol") {
                 self.current_constructor = Some("Symbol::new".to_string());
             }
             self.facts.function_calls.push(CallFact {
                 name,
-                context: path.path.to_token_stream().to_string(),
+                context: context.clone(),
                 line,
                 column,
                 start_byte: span.start,
@@ -485,14 +505,24 @@ impl<'ast> Visit<'ast> for FactsVisitor {
 
 /// Extracts facts from a block.
 pub fn facts_from_block(block: &syn::Block) -> Facts {
-    let mut visitor = FactsVisitor::default();
+    facts_from_block_with_imports(block, &ImportMap::default())
+}
+
+/// Extracts facts from a block, canonicalizing path contexts with `imports`.
+pub fn facts_from_block_with_imports(block: &syn::Block, imports: &ImportMap) -> Facts {
+    let mut visitor = FactsVisitor::new(imports);
     visitor.visit_block(block);
     visitor.facts
 }
 
 /// Extracts facts from a whole file.
 pub fn facts_from_file(file: &syn::File) -> Facts {
-    let mut visitor = FactsVisitor::default();
+    facts_from_file_with_imports(file, &ImportMap::default())
+}
+
+/// Extracts facts from a whole file, canonicalizing path contexts with `imports`.
+pub fn facts_from_file_with_imports(file: &syn::File, imports: &ImportMap) -> Facts {
+    let mut visitor = FactsVisitor::new(imports);
     visitor.visit_file(file);
     visitor.facts
 }
@@ -510,29 +540,41 @@ pub const HELPER_SUMMARY_MAX_DEPTH: usize = 3;
 /// recursing into inline modules. When a name is defined more than once, the
 /// first definition in source order wins, so resolution stays deterministic.
 pub fn function_facts(file: &syn::File) -> BTreeMap<String, Facts> {
+    function_facts_with_imports(file, &ImportMap::default())
+}
+
+/// Like [`function_facts`] but canonicalizes contexts with `imports`.
+pub fn function_facts_with_imports(
+    file: &syn::File,
+    imports: &ImportMap,
+) -> BTreeMap<String, Facts> {
     let mut map = BTreeMap::new();
-    collect_function_facts(&file.items, &mut map);
+    collect_function_facts(&file.items, imports, &mut map);
     map
 }
 
-fn collect_function_facts(items: &[syn::Item], out: &mut BTreeMap<String, Facts>) {
+fn collect_function_facts(
+    items: &[syn::Item],
+    imports: &ImportMap,
+    out: &mut BTreeMap<String, Facts>,
+) {
     for item in items {
         match item {
             syn::Item::Fn(f) => {
                 out.entry(f.sig.ident.to_string())
-                    .or_insert_with(|| facts_from_block(&f.block));
+                    .or_insert_with(|| facts_from_block_with_imports(&f.block, imports));
             }
             syn::Item::Impl(imp) => {
                 for impl_item in &imp.items {
                     if let syn::ImplItem::Fn(f) = impl_item {
                         out.entry(f.sig.ident.to_string())
-                            .or_insert_with(|| facts_from_block(&f.block));
+                            .or_insert_with(|| facts_from_block_with_imports(&f.block, imports));
                     }
                 }
             }
             syn::Item::Mod(m) => {
                 if let Some((_, sub)) = &m.content {
-                    collect_function_facts(sub, out);
+                    collect_function_facts(sub, imports, out);
                 }
             }
             _ => {}
@@ -548,8 +590,17 @@ fn collect_function_facts(items: &[syn::Item], out: &mut BTreeMap<String, Facts>
 /// entry points in the same file (computing summaries once avoids quadratic
 /// work on files with many functions).
 pub fn facts_with_helpers(file: &syn::File, entry: &ContractFn<'_>) -> Facts {
-    let summaries = function_facts(file);
-    facts_with_helpers_from(&summaries, entry)
+    facts_with_helpers_with_imports(file, entry, &ImportMap::default())
+}
+
+/// Like [`facts_with_helpers`] but canonicalizes contexts with `imports`.
+pub fn facts_with_helpers_with_imports(
+    file: &syn::File,
+    entry: &ContractFn<'_>,
+    imports: &ImportMap,
+) -> Facts {
+    let summaries = function_facts_with_imports(file, imports);
+    facts_with_helpers_from_with_imports(&summaries, entry, imports)
 }
 
 /// Like [`facts_with_helpers`] but reuses a precomputed summary map.
@@ -564,7 +615,17 @@ pub fn facts_with_helpers_from(
     summaries: &BTreeMap<String, Facts>,
     entry: &ContractFn<'_>,
 ) -> Facts {
-    let mut merged = facts_from_block(entry.block);
+    facts_with_helpers_from_with_imports(summaries, entry, &ImportMap::default())
+}
+
+/// Like [`facts_with_helpers_from`] but canonicalizes the entry point with
+/// `imports`.
+pub fn facts_with_helpers_from_with_imports(
+    summaries: &BTreeMap<String, Facts>,
+    entry: &ContractFn<'_>,
+    imports: &ImportMap,
+) -> Facts {
+    let mut merged = facts_from_block_with_imports(entry.block, imports);
     let mut visited: BTreeSet<String> = BTreeSet::new();
     visited.insert(entry.name.clone());
 

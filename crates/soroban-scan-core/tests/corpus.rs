@@ -66,20 +66,45 @@ fn positive_and_negative_fixtures_match_expectations() {
             checked += 1;
             continue;
         }
-        let positive = std::fs::read_to_string(dir.join("positive.rs"))
-            .unwrap_or_else(|_| panic!("missing positive fixture for {}", meta.id));
-
-        let pos = engine::scan_source_str(&positive, "positive.rs", &config, &registry);
-        let pos_hits: Vec<_> = pos
-            .findings
-            .iter()
-            .filter(|f| f.rule_id == meta.id)
+        let mut positives: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|_| panic!("missing corpus dir for {}", meta.id))
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("positive") && name.ends_with(".rs"))
+            })
             .collect();
+        positives.sort();
         assert!(
-            !pos_hits.is_empty(),
-            "{}: positive fixture did not trigger the rule",
+            !positives.is_empty(),
+            "{}: missing positive fixture",
             meta.id
         );
+
+        for positive_path in positives {
+            let positive_name = positive_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            let positive = std::fs::read_to_string(&positive_path).unwrap_or_else(|_| {
+                panic!("missing positive fixture {} for {}", positive_name, meta.id)
+            });
+            let pos = engine::scan_source_str(&positive, &positive_name, &config, &registry);
+            let pos_hits: Vec<_> = pos
+                .findings
+                .iter()
+                .filter(|f| f.rule_id == meta.id)
+                .collect();
+            assert!(
+                !pos_hits.is_empty(),
+                "{}: positive fixture {} did not trigger the rule",
+                meta.id,
+                positive_name
+            );
+        }
 
         // Every `negative*.rs` fixture in the rule's directory must not
         // trigger the rule. This allows adding extra negatives (negative2.rs,

@@ -56,6 +56,10 @@ Parses source with `syn`, retaining source spans (line/column) via
 `proc-macro2` with span locations enabled. Parser failures are non-fatal: the
 scanner reports diagnostics and continues where safe. No code is executed.
 
+Each parsed file also keeps a best-effort map of its `use` imports, so detectors
+can canonicalize aliased path strings. See
+[Import Resolution](import-resolution.md) for the supported forms and limits.
+
 ### 3. Analysis context
 
 A read-only context assembled from the project model and parsed sources. Rules

@@ -19,7 +19,8 @@ is enforced by the `api_stability` integration test.
 
 - `source`, `project`, `discovery`, `manifest`, `suppression`, `soroban`, and
   `rules` internals.
-- `ai`, `baseline`, `context`, and `error` support modules.
+- `imports` (best-effort, per-file `use` resolution), `ai`, `baseline`,
+  `context`, and `error` support modules.
 - The `analysis`/pipeline implementation details and any `pub(crate)` item.
 - Internal utility modules (`rules::util`, `test_support`).
 

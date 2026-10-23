@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Parsed files now expose a best-effort `use` import map
+  (`ParsedSource::resolve_path`) with support for aliases, grouped imports, and
+  globs. SS-016 uses it to detect aliased instance-storage calls, and the
+  limitations are documented in `docs/architecture/import-resolution.md` (`#41`).
+
 ### Fixed
 
+- Compilation and TOML parsing were restored after the `syn` 3 and `toml` 1.x
+  upgrades: `ItemImpl::trait_` is now a two-element tuple, and manifests and
+  configs are parsed as TOML documents with `toml::from_str`.
 - Rule panics are isolated per invocation (`RULE-004`), other rules continue,
   and a regression test now proves findings from healthy rules survive (`#103`).
 - Rules now execute in ascending rule-id order, so diagnostics and per-rule

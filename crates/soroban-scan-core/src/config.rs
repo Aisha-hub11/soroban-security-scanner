@@ -231,8 +231,7 @@ impl ScanConfig {
 
     /// Parses and validates a configuration from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, crate::error::ScanError> {
-        let value = text
-            .parse::<toml::Value>()
+        let value = toml::from_str::<toml::Value>(text)
             .map_err(|e| crate::error::ScanError::Config(format!("invalid config TOML: {e}")))?;
         let config: Self = value
             .try_into()
