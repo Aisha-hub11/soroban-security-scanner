@@ -96,6 +96,39 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
     }
 }
 
+fn run_in_with_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let result = Command::new(bin())
+        .current_dir(dir)
+        .args(args)
+        .envs(env.iter().copied())
+        .output()
+        .expect("failed to run soroban-scan");
+    Output {
+        stdout: String::from_utf8_lossy(&result.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&result.stderr).to_string(),
+        code: result.status.code().unwrap_or(-1),
+    }
+}
+
+#[test]
+fn scan_multiple_paths_is_deterministic_across_worker_counts() {
+    let args = [
+        "scan",
+        "fixtures/corpus/SS-001",
+        "fixtures/corpus/SS-003",
+        "fixtures/corpus/SS-004",
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+    ];
+    let serial = run_in_with_env(&repo_root(), &args, &[("SOROBAN_SCAN_JOBS", "1")]);
+    let parallel = run_in_with_env(&repo_root(), &args, &[("SOROBAN_SCAN_JOBS", "4")]);
+
+    assert_eq!(serial.code, parallel.code, "stderr: {}", parallel.stderr);
+    assert_eq!(serial.stdout, parallel.stdout);
+}
+
 #[test]
 fn scan_piped_terminal_report_is_complete() {
     // A tiny threshold would page on a terminal, but stdout is a pipe here, so

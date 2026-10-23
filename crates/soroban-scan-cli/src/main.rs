@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -628,12 +630,12 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
             .map_err(runtime)?;
         engine::scan(&loaded, registry, &config)
     } else if multiple {
-        let mut labels = Vec::with_capacity(args.paths.len());
-        let mut outcomes = Vec::with_capacity(args.paths.len());
-        for path in &args.paths {
-            labels.push(relative_label(path)?);
-            outcomes.push(scan_path(path, registry, &config)?);
-        }
+        let labels = args
+            .paths
+            .iter()
+            .map(|path| relative_label(path))
+            .collect::<CliResult<Vec<_>>>()?;
+        let outcomes = scan_roots(&args.paths, registry, &config)?;
         engine::merge(outcomes, &labels)
     } else {
         scan_path(&args.paths[0], registry, &config)?
@@ -1432,6 +1434,70 @@ fn single_path<'a>(paths: &'a [PathBuf], flag: &str) -> CliResult<&'a Path> {
         [only] => Ok(only.as_path()),
         _ => Err(CliError::Usage(format!("{flag} requires exactly one PATH"))),
     }
+}
+
+/// Hard cap on root-scanning workers, bounding memory and thread creation.
+const MAX_ROOT_JOBS: usize = 8;
+
+/// Resolves the worker count for a multi-root scan.
+///
+/// `SOROBAN_SCAN_JOBS=1` disables parallelism; unset, `0`, or invalid values
+/// use the available CPU count. The result is capped by `MAX_ROOT_JOBS` and
+/// the number of roots.
+fn root_jobs(count: usize) -> usize {
+    if count <= 1 {
+        return 1;
+    }
+    let requested = std::env::var("SOROBAN_SCAN_JOBS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok());
+    let jobs = match requested {
+        Some(0) | None => std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(1),
+        Some(value) => value,
+    };
+    jobs.clamp(1, MAX_ROOT_JOBS).min(count)
+}
+
+/// Scans roots concurrently while preserving input order in the merged report.
+///
+/// Results are written into per-index slots, then collected in the original
+/// order, so the merged JSON/SARIF output does not depend on scheduling.
+fn scan_roots(
+    paths: &[PathBuf],
+    registry: &RuleRegistry,
+    config: &ScanConfig,
+) -> CliResult<Vec<engine::ScanOutcome>> {
+    let jobs = root_jobs(paths.len());
+    if jobs <= 1 {
+        return paths
+            .iter()
+            .map(|path| scan_path(path, registry, config))
+            .collect();
+    }
+
+    let slots: Mutex<Vec<Option<CliResult<engine::ScanOutcome>>>> =
+        Mutex::new(std::iter::repeat_with(|| None).take(paths.len()).collect());
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                if index >= paths.len() {
+                    break;
+                }
+                let result = scan_path(&paths[index], registry, config);
+                slots.lock().expect("root result mutex poisoned")[index] = Some(result);
+            });
+        }
+    });
+
+    let mut outcomes = Vec::with_capacity(paths.len());
+    for slot in slots.into_inner().expect("root result mutex poisoned") {
+        outcomes.push(slot.expect("root result slot initialized")?);
+    }
+    Ok(outcomes)
 }
 
 /// Loads and scans a single path, which may be a file or a directory.
