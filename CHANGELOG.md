@@ -55,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`#132`).
 - Troubleshooting now explains line-independent fingerprint matching and links
   to the baseline fingerprint section (`#32`).
+- Machine-readable reports now carry baseline comparison state: JSON adds a
+  top-level `baseline` summary and per-finding `baseline_status`, and SARIF adds
+  `properties.baselineStatus` plus `runs[0].properties.baseline` (`#155`).
 - Add an editor integration (LSP) spike covering a minimal diagnostics provider,
   core-library reuse, protocol scope, security, testing, and follow-up tasks
   (`#168`).
