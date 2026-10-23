@@ -53,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SS-033 "Wildcard import from the Soroban SDK" (low/high): flags
   `use soroban_sdk::*` and nested SDK globs, with documentation and fixtures
   (`#132`).
+- Troubleshooting now explains line-independent fingerprint matching and links
+  to the baseline fingerprint section (`#32`).
 - Add an editor integration (LSP) spike covering a minimal diagnostics provider,
   core-library reuse, protocol scope, security, testing, and follow-up tasks
   (`#168`).
