@@ -24,6 +24,18 @@
 3. If the rule is genuinely wrong, please open a bug report with a minimal
    example. False positives are treated as first-class bugs.
 
+## Findings appear on lines I did not edit
+
+Findings are tracked by **fingerprint**, not by line number. A fingerprint is
+derived from the rule id, the scan-relative file path, and normalized evidence,
+so it survives line shifts and edits elsewhere in the file. A baseline can
+therefore suppress a finding that now appears on a different line, and a finding
+may be reported on a line you did not change.
+
+See [Baselines](baselines.md#fingerprints) for the exact fingerprint inputs and
+how baseline matching works. Review a shifted finding by its evidence and rule
+id rather than its line number.
+
 ## A file or directory is not scanned
 
 - `target/`, `.git/`, `node_modules/`, and `vendor/` are skipped by default.
