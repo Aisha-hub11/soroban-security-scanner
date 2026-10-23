@@ -61,6 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Baseline comparison builds one reusable fingerprint index and makes a single
   pass over the findings. Baseline documents above 64 MiB are rejected before
   parsing, and a large-baseline benchmark documents the measured cost (`#159`).
+- A dependency-boundary test now pins the documented crate and module
+  directions, including `core` never depending on `cli` and `report` consuming
+  `engine` without the reverse edge (`#76`).
+- Golden JSON and SARIF snapshots now pin the machine-readable reports for the
+  full regression corpus, with a documented update procedure (`#66`).
+- The README quickstart now lists the four commands needed for a first scan and
+  links to Getting Started for the remaining workflows (`#34`).
 - Add an editor integration (LSP) spike covering a minimal diagnostics provider,
   core-library reuse, protocol scope, security, testing, and follow-up tasks
   (`#168`).
