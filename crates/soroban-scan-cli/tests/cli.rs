@@ -96,6 +96,39 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
     }
 }
 
+fn run_in_with_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let result = Command::new(bin())
+        .current_dir(dir)
+        .args(args)
+        .envs(env.iter().copied())
+        .output()
+        .expect("failed to run soroban-scan");
+    Output {
+        stdout: String::from_utf8_lossy(&result.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&result.stderr).to_string(),
+        code: result.status.code().unwrap_or(-1),
+    }
+}
+
+#[test]
+fn scan_multiple_paths_is_deterministic_across_worker_counts() {
+    let args = [
+        "scan",
+        "fixtures/corpus/SS-001",
+        "fixtures/corpus/SS-003",
+        "fixtures/corpus/SS-004",
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+    ];
+    let serial = run_in_with_env(&repo_root(), &args, &[("SOROBAN_SCAN_JOBS", "1")]);
+    let parallel = run_in_with_env(&repo_root(), &args, &[("SOROBAN_SCAN_JOBS", "4")]);
+
+    assert_eq!(serial.code, parallel.code, "stderr: {}", parallel.stderr);
+    assert_eq!(serial.stdout, parallel.stdout);
+}
+
 #[test]
 fn scan_piped_terminal_report_is_complete() {
     // A tiny threshold would page on a terminal, but stdout is a pipe here, so
@@ -696,6 +729,113 @@ fn baseline_suppresses_existing_findings() {
 }
 
 #[test]
+fn baseline_machine_reports_include_status() {
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-bl-json-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline_path = dir.join("baseline.json");
+
+    let write = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--write-baseline",
+        baseline_path.to_str().unwrap(),
+        "--quiet",
+    ]);
+    assert_eq!(write.code, 0);
+
+    // Remove one accepted fingerprint so it is reported as new, and add an entry
+    // that no longer appears in the scan so it is reported as resolved.
+    let text = std::fs::read_to_string(&baseline_path).unwrap();
+    let mut baseline: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let removed = baseline["findings"].as_array_mut().unwrap().remove(0);
+    let removed_fingerprint = removed["fingerprint"].as_str().unwrap().to_string();
+    baseline["findings"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "fingerprint": "resolved-entry",
+            "rule_id": "SS-001",
+            "file": "src/gone.rs",
+            "severity": "high",
+            "title": "Gone"
+        }));
+    std::fs::write(
+        &baseline_path,
+        serde_json::to_string_pretty(&baseline).unwrap(),
+    )
+    .unwrap();
+
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--baseline",
+        baseline_path.to_str().unwrap(),
+        "--fail-on",
+        "none",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+
+    let report: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    assert_eq!(report["baseline"]["new"], 1);
+    assert_eq!(report["baseline"]["resolved"], 1);
+    assert_eq!(
+        report["baseline"]["resolved_findings"][0]["fingerprint"],
+        "resolved-entry"
+    );
+    let findings = report["findings"].as_array().unwrap();
+    assert!(findings.iter().any(|finding| {
+        finding["fingerprint"] == removed_fingerprint.as_str()
+            && finding["baseline_status"] == "new"
+    }));
+    for finding in findings {
+        assert!(
+            matches!(
+                finding["baseline_status"].as_str().unwrap(),
+                "new" | "existing"
+            ),
+            "unexpected status in {finding}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn oversized_baseline_is_rejected_before_reading() {
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-bl-big-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline = dir.join("huge.json");
+
+    // A sparse file: the size is reported by metadata without writing the data.
+    let file = std::fs::File::create(&baseline).unwrap();
+    file.set_len(soroban_scan_core::baseline::MAX_BASELINE_BYTES as u64 + 1)
+        .unwrap();
+    drop(file);
+
+    let out = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--fail-on",
+        "none",
+    ]);
+
+    assert_eq!(out.code, 3, "stderr: {}", out.stderr);
+    assert!(
+        out.stderr.to_lowercase().contains("too large"),
+        "got: {}",
+        out.stderr
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn truncated_baseline_reports_actionable_runtime_error() {
     let dir = std::env::temp_dir().join(format!("soroban-scan-cli-bad-bl-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1023,7 +1163,7 @@ fn guidance_request_budget_is_enforced_and_scan_completes() {
 }
 
 #[test]
-fn enabling_ai_without_a_provider_fails_closed() {
+fn enabling_ai_without_a_provider_falls_back_to_offline_guidance() {
     let dir = std::env::temp_dir().join(format!("soroban-scan-cli-ai-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1040,8 +1180,52 @@ fn enabling_ai_without_a_provider_fails_closed() {
         "--quiet",
         "--guidance",
     ]);
-    assert_eq!(out.code, 2);
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert!(out.stderr.contains("assistance is unavailable"));
+    assert!(out.stderr.contains("GUIDANCE (offline, rule-based)"));
+    assert!(out.stderr.contains("SS-001"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deterministic_scan_is_unchanged_by_ai_configuration() {
+    // The fixture has findings, so the high gate fails with exit code 1.
+    let baseline = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "high",
+    ]);
+    assert_eq!(baseline.code, 1, "stderr: {}", baseline.stderr);
+
+    let dir = std::env::temp_dir().join(format!("soroban-scan-cli-ai-off-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("ai.toml");
+    std::fs::write(&config, "[ai]\nenabled = true\nprovider = \"openai\"\n").unwrap();
+
+    // Enabling an unavailable provider must not alter findings or the exit code.
+    let enabled = run(&[
+        "scan",
+        fixture("corpus/SS-001").to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+        "--format",
+        "json",
+        "--fail-on",
+        "high",
+    ]);
+    assert_eq!(enabled.code, baseline.code, "stderr: {}", enabled.stderr);
+    let baseline_json: serde_json::Value = serde_json::from_str(&baseline.stdout).unwrap();
+    let enabled_json: serde_json::Value = serde_json::from_str(&enabled.stdout).unwrap();
+    assert_eq!(enabled_json["findings"], baseline_json["findings"]);
+    assert_eq!(
+        enabled_json["stats"]["findings_raw"],
+        baseline_json["stats"]["findings_raw"]
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

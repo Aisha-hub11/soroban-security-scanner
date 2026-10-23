@@ -8,12 +8,14 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use soroban_scan_core::ai::{self, Assistant};
-use soroban_scan_core::baseline::{self, Baseline};
+use soroban_scan_core::baseline::{self, Baseline, BaselineReport};
 use soroban_scan_core::category::Category;
 use soroban_scan_core::confidence::Confidence;
 use soroban_scan_core::config::ScanConfig;
@@ -628,12 +630,12 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
             .map_err(runtime)?;
         engine::scan(&loaded, registry, &config)
     } else if multiple {
-        let mut labels = Vec::with_capacity(args.paths.len());
-        let mut outcomes = Vec::with_capacity(args.paths.len());
-        for path in &args.paths {
-            labels.push(relative_label(path)?);
-            outcomes.push(scan_path(path, registry, &config)?);
-        }
+        let labels = args
+            .paths
+            .iter()
+            .map(|path| relative_label(path))
+            .collect::<CliResult<Vec<_>>>()?;
+        let outcomes = scan_roots(&args.paths, registry, &config)?;
         engine::merge(outcomes, &labels)
     } else {
         scan_path(&args.paths[0], registry, &config)?
@@ -658,9 +660,7 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
     }
 
     if let Some(path) = &args.prune_baseline {
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            CliError::Runtime(format!("cannot read baseline {}: {e}", path.display()))
-        })?;
+        let text = read_baseline_text(path)?;
         let baseline = Baseline::from_text(&text).map_err(|error| baseline_error(path, error))?;
         let (pruned, removed) = baseline.prune(&outcome.findings);
         let format = args
@@ -680,13 +680,12 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
         return Ok(EXIT_SUCCESS);
     }
 
+    let mut baseline_report: Option<BaselineReport> = None;
     let mut new_indices: Option<Vec<usize>> = None;
     if !args.baseline.is_empty() {
         let mut baselines = Vec::with_capacity(args.baseline.len());
         for path in &args.baseline {
-            let text = std::fs::read_to_string(path).map_err(|e| {
-                CliError::Runtime(format!("cannot read baseline {}: {e}", path.display()))
-            })?;
+            let text = read_baseline_text(path)?;
             baselines
                 .push(Baseline::from_text(&text).map_err(|error| baseline_error(path, error))?);
         }
@@ -713,6 +712,11 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
                 }
             );
         }
+        baseline_report = Some(BaselineReport::from_comparison(
+            &outcome.findings,
+            &comparison,
+            !args.incremental,
+        ));
         new_indices = Some(comparison.new);
     }
 
@@ -759,7 +763,12 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
     } else if matches!(args.format, FormatArg::Terminal) {
         report::render_terminal_with_color(&outcome, color)
     } else {
-        report::render(&outcome, registry, args.format.into())
+        report::render_with_baseline(
+            &outcome,
+            registry,
+            args.format.into(),
+            baseline_report.as_ref(),
+        )
     };
 
     match &args.output {
@@ -795,9 +804,19 @@ fn run_scan(args: ScanArgs, registry: &RuleRegistry) -> CliResult<u8> {
     }
 
     if args.guidance {
-        let base = ai::assistant(&config.ai).map_err(|e| {
-            CliError::Usage(format!("assistance is unavailable: {e} (see docs/ai.md)"))
-        })?;
+        // Assistance is advisory: a configured provider that is unavailable in
+        // this build must never change the deterministic scan or its exit code.
+        // Fall back to the offline, rule-based guidance and say so on stderr.
+        let base = match ai::assistant(&config.ai) {
+            Ok(base) => base,
+            Err(error) => {
+                eprintln!(
+                    "warning: assistance is unavailable: {error}; \
+                     continuing with offline guidance"
+                );
+                ai::RuleGuidance
+            }
+        };
         let provider = config
             .ai
             .provider
@@ -1417,6 +1436,70 @@ fn single_path<'a>(paths: &'a [PathBuf], flag: &str) -> CliResult<&'a Path> {
     }
 }
 
+/// Hard cap on root-scanning workers, bounding memory and thread creation.
+const MAX_ROOT_JOBS: usize = 8;
+
+/// Resolves the worker count for a multi-root scan.
+///
+/// `SOROBAN_SCAN_JOBS=1` disables parallelism; unset, `0`, or invalid values
+/// use the available CPU count. The result is capped by `MAX_ROOT_JOBS` and
+/// the number of roots.
+fn root_jobs(count: usize) -> usize {
+    if count <= 1 {
+        return 1;
+    }
+    let requested = std::env::var("SOROBAN_SCAN_JOBS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok());
+    let jobs = match requested {
+        Some(0) | None => std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(1),
+        Some(value) => value,
+    };
+    jobs.clamp(1, MAX_ROOT_JOBS).min(count)
+}
+
+/// Scans roots concurrently while preserving input order in the merged report.
+///
+/// Results are written into per-index slots, then collected in the original
+/// order, so the merged JSON/SARIF output does not depend on scheduling.
+fn scan_roots(
+    paths: &[PathBuf],
+    registry: &RuleRegistry,
+    config: &ScanConfig,
+) -> CliResult<Vec<engine::ScanOutcome>> {
+    let jobs = root_jobs(paths.len());
+    if jobs <= 1 {
+        return paths
+            .iter()
+            .map(|path| scan_path(path, registry, config))
+            .collect();
+    }
+
+    let slots: Mutex<Vec<Option<CliResult<engine::ScanOutcome>>>> =
+        Mutex::new(std::iter::repeat_with(|| None).take(paths.len()).collect());
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                if index >= paths.len() {
+                    break;
+                }
+                let result = scan_path(&paths[index], registry, config);
+                slots.lock().expect("root result mutex poisoned")[index] = Some(result);
+            });
+        }
+    });
+
+    let mut outcomes = Vec::with_capacity(paths.len());
+    for slot in slots.into_inner().expect("root result mutex poisoned") {
+        outcomes.push(slot.expect("root result slot initialized")?);
+    }
+    Ok(outcomes)
+}
+
 /// Loads and scans a single path, which may be a file or a directory.
 fn scan_path(
     path: &Path,
@@ -1553,6 +1636,22 @@ fn validate_rule_ids(config: &ScanConfig, registry: &RuleRegistry) -> CliResult<
         }
     }
     Ok(())
+}
+
+/// Reads a baseline file, rejecting documents above the parser memory bound.
+fn read_baseline_text(path: &Path) -> CliResult<String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| CliError::Runtime(format!("cannot read baseline {}: {e}", path.display())))?;
+    if metadata.len() > baseline::MAX_BASELINE_BYTES as u64 {
+        return Err(CliError::Runtime(format!(
+            "baseline {} is too large ({} bytes; limit {} bytes)",
+            path.display(),
+            metadata.len(),
+            baseline::MAX_BASELINE_BYTES
+        )));
+    }
+    std::fs::read_to_string(path)
+        .map_err(|e| CliError::Runtime(format!("cannot read baseline {}: {e}", path.display())))
 }
 
 fn serialize_baseline(baseline: &Baseline, format: BaselineFormatArg) -> CliResult<String> {

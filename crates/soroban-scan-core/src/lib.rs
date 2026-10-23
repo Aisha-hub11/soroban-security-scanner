@@ -26,6 +26,7 @@ pub mod discovery;
 pub mod engine;
 pub mod error;
 pub mod finding;
+pub mod imports;
 pub mod manifest;
 pub mod model;
 pub mod project;

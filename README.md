@@ -35,22 +35,18 @@ deterministic rule engine, and CI-friendly machine-readable output (JSON, SARIF)
 ## Quickstart
 
 ```bash
-git clone https://github.com/AyinkxLab/soroban-security-scanner
+git clone https://github.com/StellarFoundry/soroban-security-scanner
 cd soroban-security-scanner
 cargo build --release
-
-# Scan a contract and print findings
 ./target/release/soroban-scan scan ./examples/vulnerable-contract --fail-on none
-
-# Machine-readable output for CI
-./target/release/soroban-scan scan . --format sarif --output results.sarif
 ```
 
-Requires a stable Rust toolchain. See [`docs/development/setup.md`](docs/development/setup.md).
+Requires a stable Rust toolchain. See [Getting Started](docs/getting-started.md)
+for installation, machine-readable output, and CI usage.
 
 ## What it detects
 
-Eighteen Soroban-aware detectors ship today (from `SS-001` to `SS-029`). Severity
+Nineteen Soroban-aware detectors ship today (from `SS-001` to `SS-033`). Severity
 and confidence are independent and always reported honestly.
 
 | Rule | Title | Severity | Confidence | Category |
@@ -73,6 +69,7 @@ and confidence are independent and always reported honestly.
 | [SS-016](docs/rules/detectors/SS-016.md) | Unbounded data stored in instance storage | medium | low | storage |
 | [SS-017](docs/rules/detectors/SS-017.md) | Authorization after state mutation | medium | medium | authorization |
 | [SS-029](docs/rules/detectors/SS-029.md) | Public test or debug hook in a contract entry point | medium | medium | access-control |
+| [SS-033](docs/rules/detectors/SS-033.md) | Wildcard import from the Soroban SDK | low | high | dependencies |
 
 Rule identifiers are stable (never reused or renumbered). See
 [`docs/rules/README.md`](docs/rules/README.md) for the full rule system.
@@ -97,7 +94,7 @@ Rule identifiers are stable (never reused or renumbered). See
 
 - Deterministic project discovery and Soroban classification.
 - `syn`-based Rust parsing with source locations.
-- Eighteen security detectors (from `SS-001` to `SS-029`) with fixtures and documentation.
+- Nineteen security detectors (from `SS-001` to `SS-033`) with fixtures and documentation.
 - CLI: `scan`, `rules`, `explain`, `version`, `init`, `config`.
 - Output formats: terminal, JSON, SARIF 2.1.0, Markdown, and GitHub workflow annotations.
 - Configurable rule selection, thresholds, and excludes.

@@ -12,8 +12,9 @@ use crate::model::{DepKind, DepSource, Dependency, Manifest, PackageInfo, Worksp
 
 /// Parses a `Cargo.toml` from its raw text.
 pub fn parse_manifest(path: &Path, content: &str) -> Result<Manifest, ScanError> {
-    let value: Value = content
-        .parse::<Value>()
+    // `Value::from_str` parses a single TOML value in toml 1.x, so use the
+    // document deserializer to accept a full Cargo.toml document.
+    let value: Value = toml::from_str(content)
         .map_err(|e| ScanError::parse(path, format!("invalid Cargo.toml: {e}")))?;
 
     let table = value

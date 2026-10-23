@@ -91,14 +91,18 @@ Values outside these ranges — including `nan` and infinities for
 provider call. The scan exits with a configuration error naming the field.
 
 No model provider is bundled. If you set `enabled = true` without a bundled
-provider — or name a provider that is not compiled in — the CLI **fails closed**:
+provider — or name a provider that is not compiled in — no provider call is
+made. With `--guidance` the CLI still completes the scan and falls back to the
+offline, rule-based guidance, printing a warning:
 
 ```
-error: assistance is unavailable: assistance provider 'openai' is not available in this build
+warning: assistance is unavailable: assistance provider 'openai' is not available in this build; continuing with offline guidance
+GUIDANCE (offline, rule-based)
 ```
 
-This is deliberate. Enabling assistance can never silently fall back to
-unverified behavior.
+This is deliberate: assistance is advisory, so an unavailable provider can never
+change findings or the exit code. The output is clearly labeled as offline
+guidance, and enabling assistance can never silently use unverified behavior.
 
 ## Request budget and backoff
 

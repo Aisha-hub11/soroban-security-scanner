@@ -365,6 +365,8 @@ pub struct ParsedSource {
     pub contract_definitions: Vec<String>,
     /// Inline suppression directives detected in the file.
     pub suppressions: Vec<crate::suppression::Suppression>,
+    /// Best-effort import map built from this file's `use` items.
+    pub imports: crate::imports::ImportMap,
 }
 
 impl ParsedSource {
@@ -381,6 +383,22 @@ impl ParsedSource {
     /// Returns functions that are Soroban contract entry points.
     pub fn contract_entry_points(&self) -> impl Iterator<Item = &FunctionSummary> {
         self.functions.iter().filter(|f| f.is_contract_entry_point)
+    }
+
+    /// Canonicalizes a rendered path against this file's imports.
+    ///
+    /// Resolution is best-effort and syntactic: it understands `use` aliases,
+    /// grouped imports, and globs, but never resolves across modules or crates.
+    /// Ambiguous glob matches are returned as [`crate::imports::Resolution::Ambiguous`]
+    /// rather than guessed.
+    pub fn resolve_path(&self, path: &str) -> crate::imports::Resolution {
+        self.imports.resolve(path)
+    }
+
+    /// Canonicalizes a path when exactly one import matches; otherwise returns
+    /// the path unchanged.
+    pub fn canonical_path(&self, path: &str) -> String {
+        self.imports.canonicalize(path)
     }
 }
 
@@ -647,7 +665,7 @@ fn walk_items(
                 let trait_path = imp
                     .trait_
                     .as_ref()
-                    .map(|(_, path, _)| path.to_token_stream().to_string());
+                    .map(|(path, _)| path.to_token_stream().to_string());
                 let mut summary = item_summary(
                     ItemKind::Impl,
                     name.clone(),
@@ -1532,6 +1550,7 @@ pub fn parse_source_with_options(
             contract_types: Vec::new(),
             contract_definitions: Vec::new(),
             suppressions: Vec::new(),
+            imports: crate::imports::ImportMap::default(),
         };
     }
 
@@ -1558,6 +1577,7 @@ pub fn parse_source_with_options(
             );
             let (macro_definitions, macro_invocations) = macro_inventory(&file);
             let suppressions = crate::suppression::detect(content, path, &item_spans(&file));
+            let imports = crate::imports::ImportMap::from_file(&file);
             ParsedSource {
                 path: path.to_path_buf(),
                 module_path,
@@ -1572,6 +1592,7 @@ pub fn parse_source_with_options(
                 contract_types,
                 contract_definitions,
                 suppressions,
+                imports,
             }
         }
         Err(err) => ParsedSource {
@@ -1588,6 +1609,7 @@ pub fn parse_source_with_options(
             contract_types: Vec::new(),
             contract_definitions: Vec::new(),
             suppressions: Vec::new(),
+            imports: crate::imports::ImportMap::default(),
         },
     }
 }

@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Parsed files now expose a best-effort `use` import map
+  (`ParsedSource::resolve_path`) with support for aliases, grouped imports, and
+  globs. SS-016 uses it to detect aliased instance-storage calls, and the
+  limitations are documented in `docs/architecture/import-resolution.md` (`#41`).
+
 ### Fixed
 
+- Compilation and TOML parsing were restored after the `syn` 3 and `toml` 1.x
+  upgrades: `ItemImpl::trait_` is now a two-element tuple, and manifests and
+  configs are parsed as TOML documents with `toml::from_str`.
 - The documentation link checker now also validates reference-style links and
   their definitions, and is covered by unit tests (`#28`).
 - Rule panics are isolated per invocation (`RULE-004`), other rules continue,
@@ -42,6 +52,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SS-033 "Wildcard import from the Soroban SDK" (low/high): flags
+  `use soroban_sdk::*` and nested SDK globs, with documentation and fixtures
+  (`#132`).
+- Troubleshooting now explains line-independent fingerprint matching and links
+  to the baseline fingerprint section (`#32`).
+- Machine-readable reports now carry baseline comparison state: JSON adds a
+  top-level `baseline` summary and per-finding `baseline_status`, and SARIF adds
+  `properties.baselineStatus` plus `runs[0].properties.baseline` (`#155`).
+- Baseline comparison builds one reusable fingerprint index and makes a single
+  pass over the findings. Baseline documents above 64 MiB are rejected before
+  parsing, and a large-baseline benchmark documents the measured cost (`#159`).
+- A dependency-boundary test now pins the documented crate and module
+  directions, including `core` never depending on `cli` and `report` consuming
+  `engine` without the reverse edge (`#76`).
+- Golden JSON and SARIF snapshots now pin the machine-readable reports for the
+  full regression corpus, with a documented update procedure (`#66`).
+- The README quickstart now lists the four commands needed for a first scan and
+  links to Getting Started for the remaining workflows (`#34`).
 - Add an editor integration (LSP) spike covering a minimal diagnostics provider,
   core-library reuse, protocol scope, security, testing, and follow-up tasks
   (`#168`).

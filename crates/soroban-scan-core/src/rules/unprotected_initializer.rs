@@ -8,7 +8,8 @@ use crate::rule::{Rule, RuleMetadata};
 use crate::severity::Severity;
 
 use super::util::{
-    contract_entry_functions, facts_with_helpers_from, function_facts, location_for,
+    contract_entry_functions, facts_with_helpers_from_with_imports, function_facts_with_imports,
+    location_for,
 };
 
 /// Rule metadata.
@@ -58,12 +59,13 @@ impl Rule for UnprotectedInitializer {
             let Some(file) = &source.syntax else {
                 continue;
             };
-            let summaries = function_facts(file);
+            let summaries = function_facts_with_imports(file, &source.imports);
             for func in contract_entry_functions(file) {
                 if !func.is_public || !is_initializer(&func.name) {
                     continue;
                 }
-                let facts = facts_with_helpers_from(&summaries, &func);
+                let facts =
+                    facts_with_helpers_from_with_imports(&summaries, &func, &source.imports);
                 // Authorization or an existence read indicates a guard.
                 if facts.has_require_auth() {
                     continue;
